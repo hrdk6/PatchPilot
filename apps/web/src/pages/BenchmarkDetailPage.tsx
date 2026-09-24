@@ -15,6 +15,7 @@ import {
   percent,
   StatusBadge,
 } from "../components/common";
+import { DownloadIcon } from "../components/icons";
 
 export function BenchmarkDetailPage(): JSX.Element {
   const { benchmarkId = "" } = useParams();
@@ -36,28 +37,33 @@ export function BenchmarkDetailPage(): JSX.Element {
 
   return (
     <>
-      <div className="page-header">
-        <div className="row">
-          <h1 className="mono">{data.id}</h1>
+      <header className="change-head">
+        <div className="change-title">
+          <p className="change-id mono">
+            <Link to="/benchmarks">Benchmarks</Link> / {data.id}
+          </p>
+          <h1>{data.dataset.split(/[\\/]/).pop()?.replace(/\.ya?ml$/, "")}</h1>
+          <p className="change-meta">
+            <span>
+              {data.models.length} model(s) on identical tasks
+            </span>
+            <span className="mono">{data.models.join(" · ")}</span>
+          </p>
+        </div>
+        <div className="change-actions">
           <StatusBadge status={data.status} />
-          <div className="spacer" />
           {data.report ? (
-            <>
-              <a className="badge badge-info" href={api.benchmarkJsonUrl(data.id)}>
-                Export JSON
+            <div className="button-row">
+              <a className="button" href={api.benchmarkJsonUrl(data.id)}>
+                <DownloadIcon /> Export JSON
               </a>
-              <a className="badge badge-info" href={api.benchmarkMarkdownUrl(data.id)}>
-                Export Markdown
+              <a className="button" href={api.benchmarkMarkdownUrl(data.id)}>
+                <DownloadIcon /> Export Markdown
               </a>
-            </>
+            </div>
           ) : null}
         </div>
-        <p>
-          <span className="mono">{data.dataset.split(/[\\/]/).pop()}</span> ·{" "}
-          {data.models.length} model(s) requested ·{" "}
-          <Link to="/benchmarks">back to benchmarks</Link>
-        </p>
-      </div>
+      </header>
 
       {data.error ? (
         <div className="banner banner-error" role="alert">
@@ -162,7 +168,7 @@ export function BenchmarkDetailPage(): JSX.Element {
             </div>
           </div>
 
-          <div className="grid grid-2">
+          <div className="grid grid-charts">
             <div className="card">
               <h2>Pass rate</h2>
               <BarChart
@@ -180,14 +186,21 @@ export function BenchmarkDetailPage(): JSX.Element {
               <h2>Latency</h2>
               <BarChart
                 title="Median and p99 latency by model"
+                legend={[
+                  { label: "median", tone: "accent" },
+                  { label: "p99", tone: "muted" },
+                ]}
                 data={summaries.flatMap((summary) => [
                   {
-                    label: `${summary.model} median`,
+                    label: summary.model,
+                    series: "median",
                     value: summary.median_latency_ms,
                     display: formatDuration(summary.median_latency_ms),
                   },
                   {
-                    label: `${summary.model} p99`,
+                    label: summary.model,
+                    series: "p99",
+                    continued: true,
                     value: summary.p99_latency_ms,
                     display: formatDuration(summary.p99_latency_ms),
                     // A second series, not a warning: status colours stay reserved.

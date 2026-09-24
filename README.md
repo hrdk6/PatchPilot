@@ -31,7 +31,7 @@ INGEST ─▶ INDEX ─▶ RETRIEVE ─▶ PLAN ─▶ GENERATE_PATCH ─▶ VAL
                               FINISHED
 ```
 
-![A run that fixed the bug: the state-machine timeline with a reason and duration for every transition, per-state latency, tokens, cost, and the sandbox it ran in](docs/images/run-detail.png)
+![A run that fixed the bug, shown as a change under review: the issue as its subject, a Verified +1 verdict, the nine stages with the time spent in each, change info, and the review log of every transition with its reason](docs/images/run-detail.png)
 
 ---
 
@@ -184,9 +184,12 @@ Three pages, all reading real persisted data:
 - **New run** — repository, issue, model, budget, sandbox controls. Models you
   have not configured are listed but disabled, with the env var that would
   enable them.
-- **Run detail** — live state-machine timeline, retrieval trace with scores and
-  reasons, per-attempt plan and diff, sandbox output, artifacts, and a
-  latency-by-state chart.
+- **Run detail** — each run reads like a change in a code-review tool: the issue
+  as its subject, a Verified +1/−1 verdict, a stage rail showing where the time
+  went (and a marked line where a failed run stopped), a live review log, the
+  proposed diff with line-number gutters, one patchset per attempt with its plan
+  and sandbox checks, and the retrieval trace. Pick a signal in the trace's
+  legend to highlight every chunk it selected.
 - **Benchmarks** — model comparison table with 95% confidence intervals, charts
   for pass rate / latency / cost / retries, filters by tag and outcome, and
   JSON + Markdown export.
@@ -194,7 +197,8 @@ Three pages, all reading real persisted data:
 ![A benchmark of two models on identical tasks: pass rate with a 95% confidence interval, latency percentiles, retries, tokens and estimated cost, with a small-sample warning](docs/images/benchmark.png)
 
 The dashboard follows the system light/dark preference and reflows down to phone
-width.
+width. Its visual system (tokens, colour rules, components) is documented in
+[`DESIGN.md`](DESIGN.md).
 
 ---
 
@@ -358,14 +362,14 @@ pre-commit install
 ruff check .                            # lint
 ruff format --check .                   # format
 mypy packages apps/api                  # type check
-pytest -q                               # 389 tests; 4 need a Docker daemon
+pytest -q                               # 391 tests; 4 need a Docker daemon
 ```
 
 ```bash
 cd apps/web
 npm install
 npm run lint
-npm run test                            # 24 tests
+npm run test                            # 30 tests
 npm run build
 ```
 
@@ -418,9 +422,8 @@ what is deliberately excluded (auto-merge, multi-agent decomposition).
 | [`docs/security.md`](docs/security.md) | Threat model, every control, every known limit, hardening roadmap |
 | [`docs/evaluation.md`](docs/evaluation.md) | Every metric defined, what each proves, reproducibility, how to add tasks |
 | [`docs/roadmap.md`](docs/roadmap.md) | What is next and what is excluded on purpose |
+| [`DESIGN.md`](DESIGN.md) | The dashboard's visual system: tokens, colour rules, components |
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-#   P a t c h P i l o t  
- 

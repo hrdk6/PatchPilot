@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 import { api } from "./api/client";
 import { useResource } from "./api/hooks";
+import { AlertIcon, CheckIcon, PlusIcon, ShieldIcon } from "./components/icons";
 import { BenchmarkDetailPage } from "./pages/BenchmarkDetailPage";
 import { BenchmarksPage } from "./pages/BenchmarksPage";
 import { NewRunPage } from "./pages/NewRunPage";
@@ -12,29 +13,31 @@ function SystemIndicator(): JSX.Element {
   const system = useResource(() => api.system(), [], { pollMs: 15000 });
   if (system.error) {
     return (
-      <span className="badge badge-danger" title={system.error.remediation ?? undefined}>
-        API unreachable
+      <span className="label label-warn" title={system.error.remediation ?? undefined}>
+        <AlertIcon /> API unreachable
       </span>
     );
   }
   if (!system.data) {
-    return <span className="badge">connecting…</span>;
+    return <span className="label label-neutral">connecting…</span>;
   }
   const { sandbox, worker_running, queued_jobs, version } = system.data;
   return (
     <>
       <span
-        className={sandbox.isolated ? "badge badge-ok" : "badge badge-warn"}
+        className={sandbox.isolated ? "label label-neutral" : "label label-warn"}
         title={sandbox.reason}
       >
-        sandbox: {sandbox.backend}
-        {sandbox.isolated ? "" : " (not isolated)"}
+        {sandbox.isolated ? <ShieldIcon /> : <AlertIcon />}
+        sandbox {sandbox.backend}
+        {sandbox.isolated ? "" : " · not isolated"}
       </span>
-      <span className={worker_running ? "badge badge-ok" : "badge badge-warn"}>
+      <span className={worker_running ? "label label-neutral" : "label label-warn"}>
+        {worker_running ? <CheckIcon /> : <AlertIcon />}
         worker {worker_running ? "up" : "down"}
         {queued_jobs > 0 ? ` · ${queued_jobs} queued` : ""}
       </span>
-      <span className="faint">v{version}</span>
+      <span className="faint mono">v{version}</span>
     </>
   );
 }
@@ -43,17 +46,20 @@ export function App(): JSX.Element {
   return (
     <div className="app">
       <header className="topbar">
-        <NavLink to="/runs" className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            P
-          </span>
+        <NavLink to="/runs" className="brand" aria-label="PatchPilot, all runs">
+          <svg className="brand-mark" viewBox="0 0 20 20" aria-hidden="true">
+            <rect x="1" y="1" width="18" height="18" rx="3" />
+            <path d="M6 7h5M8.5 4.5v5M6 14h8" />
+          </svg>
           PatchPilot
         </NavLink>
         <nav className="nav" aria-label="Main">
-          <NavLink to="/new">New run</NavLink>
           <NavLink to="/runs">Runs</NavLink>
           <NavLink to="/benchmarks">Benchmarks</NavLink>
         </nav>
+        <NavLink to="/new" className="button primary nav-new">
+          <PlusIcon /> New run
+        </NavLink>
         <div className="topbar-right">
           <SystemIndicator />
         </div>
@@ -70,10 +76,12 @@ export function App(): JSX.Element {
             path="*"
             element={
               <div className="empty">
-                <h3>Page not found</h3>
-                <p>
-                  <NavLink to="/runs">Back to runs</NavLink>
-                </p>
+                <div>
+                  <h3>Page not found</h3>
+                  <p>
+                    <NavLink to="/runs">Back to runs</NavLink>
+                  </p>
+                </div>
               </div>
             }
           />

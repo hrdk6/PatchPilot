@@ -204,6 +204,18 @@ class Run(Base):
     artifacts: Mapped[list[Artifact]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    # Read-only joins so a run summary can say what it was about without a
+    # second query per row.
+    issue: Mapped[Issue] = relationship(lazy="joined", viewonly=True)
+    repository: Mapped[Repository] = relationship(lazy="joined", viewonly=True)
+
+    @property
+    def issue_title(self) -> str:
+        return self.issue.title if self.issue is not None else ""
+
+    @property
+    def repository_slug(self) -> str:
+        return self.repository.slug if self.repository is not None else ""
 
     __table_args__ = (
         Index("ix_runs_status_created", "status", "created_at"),

@@ -1,8 +1,16 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { Attempt, RetrievedChunk, RunEvent, SandboxExecution } from "../api/types";
-import { AttemptCard, DiffView, RetrievalTable, SandboxOutput, StateTimeline } from "./RunViews";
+import {
+  AttemptCard,
+  DiffView,
+  RetrievalTable,
+  SandboxOutput,
+  StageRail,
+  StateTimeline,
+} from "./RunViews";
 
 const events: RunEvent[] = [
   {
@@ -110,6 +118,17 @@ describe("RetrievalTable", () => {
     render(<RetrievalTable chunks={chunks} truncated />);
     expect(screen.getByText("Context budget reached")).toBeInTheDocument();
   });
+
+  it("highlights the chunks a chosen signal selected, and clears on a second press", async () => {
+    const { container } = render(<RetrievalTable chunks={chunks} truncated={false} />);
+    const key = screen.getByRole("button", { name: /import-graph-neighbor/ });
+    await userEvent.click(key);
+    expect(key).toHaveAttribute("aria-pressed", "true");
+    expect(container.querySelector("table")).toHaveAttribute("data-focus", "import-graph-neighbor");
+    expect(container.querySelectorAll("tbody tr[data-match]").length).toBeGreaterThan(0);
+    await userEvent.click(key);
+    expect(container.querySelector("table")).not.toHaveAttribute("data-focus");
+  });
 });
 
 describe("DiffView", () => {
@@ -181,5 +200,88 @@ describe("AttemptCard", () => {
     };
     render(<AttemptCard attempt={attempt} />);
     expect(screen.getByText(/2\.5s · 1,234 in \/ 56 out/)).toBeInTheDocument();
+  });
+});
+
+describe("StageRail", () => {
+  it("marks the stage where a run that did not pass stopped", () => {
+    const stopped: RunEvent[] = [
+      { index: 0, from_state: null, to_state: "INGEST", reason: "pinned", attempt: 0, duration_ms: 900, detail: {}, at: "" },
+      {
+        index: 1,
+        from_state: "INGEST",
+        to_state: "FINISHED",
+        reason: "final status sandbox-failed (sandbox-unavailable)",
+        attempt: 0,
+        duration_ms: 0,
+        detail: {},
+        at: "",
+      },
+    ];
+    const { container } = render(
+      <StageRail events={stopped} perStateMs={{ INGEST: 900 }} live={false} passed={false} />,
+    );
+    const marked = container.querySelector(".stage-stopped");
+    expect(marked).toHaveTextContent("INGEST");
+    expect(marked).toHaveTextContent("stopped");
+    expect(screen.getByRole("table", { name: "Latency by state machine node" })).toHaveTextContent("900ms");
+  });
+
+  it("shows no stop marker on a run that passed", () => {
+    const { container } = render(
+      <StageRail events={events} perStateMs={{ INGEST: 1200 }} live={false} passed />,
+    );
+    expect(container.querySelector(".stage-stopped")).toBeNull();
+  });
+});
+
+describe("DiffView gutters", () => {
+  it("numbers old and new lines from the hunk header", () => {
+    const { container } = render(
+      <DiffView diff={"--- a/x.py\n+++ b/x.py\n@@ -10,2 +10,2 @@\n keep\n-old\n+new\n"} />,
+    );
+    const added = container.querySelector(".diff-add");
+    const removed = container.querySelector(".diff-del");
+    expect(added?.querySelectorAll(".diff-gutter")[1]).toHaveTextContent("11");
+    expect(removed?.querySelectorAll(".diff-gutter")[0]).toHaveTextContent("11");
+  });
+});
+
+describe("Collapsing earlier patchsets", () => {
+  const twoAttempts: RunEvent[] = [
+    { index: 0, from_state: null, to_state: "INGEST", reason: "pinned", attempt: 0, duration_ms: 5, detail: {}, at: "" },
+    { index: 1, from_state: "RETRIEVE", to_state: "PLAN", reason: "root cause one", attempt: 1, duration_ms: 5, detail: {}, at: "" },
+    { index: 2, from_state: "SANDBOX_TEST", to_state: "ANALYZE_RESULT", reason: "suite still fails", attempt: 1, duration_ms: 5, detail: {}, at: "" },
+    { index: 3, from_state: "RETRIEVE", to_state: "PLAN", reason: "root cause two", attempt: 2, duration_ms: 5, detail: {}, at: "" },
+  ];
+
+  it("keeps only the latest patchset open in the review log, with the earlier outcome in its summary", () => {
+    const { container } = render(<StateTimeline events={twoAttempts} live={false} />);
+    const groups = container.querySelectorAll(".log-group details");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).not.toHaveAttribute("open");
+    expect(groups[0]?.querySelector("summary")).toHaveTextContent("suite still fails");
+    expect(groups[1]).toHaveAttribute("open");
+  });
+
+  it("renders a collapsed patchset card as a closed disclosure", () => {
+    const attempt: Attempt = {
+      attempt: 1,
+      plan: null,
+      plan_error: null,
+      diff: null,
+      diff_hash: null,
+      validation: null,
+      execution: null,
+      analysis: "",
+      should_retry: true,
+      succeeded: false,
+      input_tokens: 1,
+      output_tokens: 1,
+      duration_ms: 1,
+    };
+    const { container } = render(<AttemptCard attempt={attempt} collapsed />);
+    expect(container.querySelector("details.patchset")).not.toHaveAttribute("open");
+    expect(screen.getByText("Patchset 1")).toBeInTheDocument();
   });
 });

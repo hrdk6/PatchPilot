@@ -38,3 +38,9 @@ apps/web/coverage/
 .claude/
 .vscode/
 .DS_Store
+
+# Local design tooling (Impeccable); only its outputs (PRODUCT.md, DESIGN.md) are committed.
+.github/skills/
+.github/agents/
+.github/hooks/
+.impeccable/

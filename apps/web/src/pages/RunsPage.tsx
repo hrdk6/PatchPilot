@@ -1,4 +1,4 @@
-/** The run list: everything that has been attempted, newest first. */
+/** The run list as a review queue: every run is a change with a subject and a verdict. */
 
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -13,8 +13,11 @@ import {
   formatNumber,
   formatTime,
   Loading,
+  ScoreSquare,
   StatusBadge,
+  Tag,
 } from "../components/common";
+import { AlertIcon } from "../components/icons";
 
 export function RunsPage(): JSX.Element {
   const [status, setStatus] = useState("");
@@ -26,106 +29,116 @@ export function RunsPage(): JSX.Element {
 
   return (
     <>
-      <div className="page-header">
-        <h1>Runs</h1>
-        <p>Every repair attempt, with the model, outcome and what it cost.</p>
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div className="row">
-            <label htmlFor="status-filter" className="muted">
-              Status
-            </label>
-            <select
-              id="status-filter"
-              value={status}
-              onChange={(event) => setStatus(event.target.value)}
-              style={{ width: "auto" }}
-            >
-              <option value="">all</option>
-              <option value="queued">queued</option>
-              <option value="running">running</option>
-              {TERMINAL_STATUSES.map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="row">
-            <span className="faint">
-              {runs.data ? `${runs.data.total} run(s)` : ""}
-            </span>
-            <button type="button" onClick={runs.refresh} disabled={runs.loading}>
-              Refresh
-            </button>
-          </div>
+      <header className="page-head">
+        <div>
+          <h1>Runs</h1>
+          <p>Every repair the agent attempted, newest first, with its verdict and cost.</p>
         </div>
+        <div className="page-head-tools">
+          <label htmlFor="status-filter">Status</label>
+          <select
+            id="status-filter"
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="">all</option>
+            <option value="queued">queued</option>
+            <option value="running">running</option>
+            {TERMINAL_STATUSES.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+          <span className="faint num">{runs.data ? `${runs.data.total} run(s)` : ""}</span>
+          <button type="button" onClick={runs.refresh} disabled={runs.loading}>
+            Refresh
+          </button>
+        </div>
+      </header>
 
+      <section className="panel">
         {runs.initialLoading ? (
-          <Loading label="Loading runs" />
+          <div className="panel-body">
+            <Loading label="Loading runs" />
+          </div>
         ) : runs.error ? (
-          <ErrorBanner error={runs.error} onRetry={runs.refresh} />
+          <div className="panel-body">
+            <ErrorBanner error={runs.error} onRetry={runs.refresh} />
+          </div>
         ) : !runs.data || runs.data.items.length === 0 ? (
-          <EmptyState title="No runs yet">
-            <p>
-              <Link to="/new">Start a run</Link> against one of the bundled
-              fixture repositories — it needs no API key.
-            </p>
-          </EmptyState>
+          <div className="panel-body">
+            <EmptyState title="No runs yet">
+              <p>
+                <Link to="/new">Start a run</Link> against one of the bundled
+                fixture repositories. It needs no API key.
+              </p>
+            </EmptyState>
+          </div>
         ) : (
           <div className="table-scroll">
-            <table>
+            <table className="queue">
               <caption className="visually-hidden">Agent runs, newest first</caption>
               <thead>
                 <tr>
-                  <th>Run</th>
-                  <th>Status</th>
+                  <th className="queue-score-head">
+                    <span className="visually-hidden">Verified score</span>
+                  </th>
+                  <th>Subject</th>
+                  <th>Verdict</th>
                   <th>Model</th>
-                  <th className="num">Attempts</th>
+                  <th className="num">Patchsets</th>
                   <th>Sandbox</th>
                   <th className="num">Tokens</th>
                   <th className="num">Est. cost</th>
-                  <th>Created</th>
+                  <th>Opened</th>
                 </tr>
               </thead>
               <tbody>
                 {runs.data.items.map((run) => (
                   <tr key={run.id}>
-                    <td>
-                      <Link to={`/runs/${run.id}`} className="mono">
-                        {run.id}
+                    <td className="queue-score-cell">
+                      <ScoreSquare status={run.status} />
+                    </td>
+                    <td className="queue-subject">
+                      <Link to={`/runs/${run.id}`}>
+                        {run.issue_title || "(untitled issue)"}
                       </Link>
-                      {run.stop_reason ? (
-                        <div className="faint">{run.stop_reason}</div>
-                      ) : null}
+                      <div className="queue-meta mono">
+                        {run.id}
+                        {run.repository_slug ? <> · {run.repository_slug}</> : null}
+                      </div>
                     </td>
                     <td>
                       <StatusBadge status={run.status} />
+                      {run.stop_reason && run.stop_reason !== run.status ? (
+                        <div className="queue-meta mono">{run.stop_reason}</div>
+                      ) : null}
                     </td>
                     <td className="mono">{run.model}</td>
                     <td className="num">{run.attempts_used}</td>
-                    <td>
-                      <span className="badge">{run.sandbox_backend ?? "—"}</span>
+                    <td className="nowrap">
                       {run.sandbox_backend && !run.sandbox_isolated ? (
-                        <span className="badge badge-warn" title="No isolation">
-                          not isolated
+                        <span className="label label-warn" title="No isolation">
+                          <AlertIcon />
+                          {run.sandbox_backend} · <span>not isolated</span>
                         </span>
-                      ) : null}
+                      ) : (
+                        <Tag>{run.sandbox_backend ?? "—"}</Tag>
+                      )}
                     </td>
-                    <td className="num">
-                      {formatNumber(run.input_tokens + run.output_tokens)}
-                    </td>
+                    <td className="num">{formatNumber(run.input_tokens + run.output_tokens)}</td>
                     <td className="num">{formatCost(run.cost_usd, run.cost_known)}</td>
-                    <td className="nowrap faint">{formatTime(run.created_at)}</td>
+                    <td className="nowrap faint num" title={formatTime(run.created_at)}>
+                      {formatTime(run.created_at, { seconds: false })}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-      </div>
+      </section>
     </>
   );
 }

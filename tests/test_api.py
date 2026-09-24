@@ -185,6 +185,12 @@ class TestRunEndpoints:
         assert client.get("/api/v1/runs?status=fixed").json()["total"] == 0
         assert client.get("/api/v1/runs?model=mock:deterministic").json()["total"] == 1
 
+    def test_run_summaries_say_what_each_run_was_about(self, client: TestClient) -> None:
+        client.post("/api/v1/runs", json=run_payload(issue_title="percentage() divides by zero"))
+        item = client.get("/api/v1/runs").json()["items"][0]
+        assert item["issue_title"] == "percentage() divides by zero"
+        assert item["repository_slug"] == "calc_service"
+
     def test_cancelling_a_queued_run_sets_the_flag(self, client: TestClient) -> None:
         identifier = client.post("/api/v1/runs", json=run_payload()).json()["id"]
         assert client.post(f"/api/v1/runs/{identifier}/cancel").status_code == 200

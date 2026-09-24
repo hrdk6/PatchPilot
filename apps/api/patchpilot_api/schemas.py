@@ -192,6 +192,8 @@ class RunSummaryResponse(ApiModel):
     id: str
     repository_id: str
     issue_id: str
+    issue_title: str = ""
+    repository_slug: str = ""
     model: str
     status: str
     state: str

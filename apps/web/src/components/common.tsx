@@ -4,19 +4,31 @@ import type { ReactNode } from "react";
 
 import type { PatchPilotApiError } from "../api/client";
 import type { RunStatus } from "../api/types";
+import { AlertIcon, CheckIcon, ClockIcon, CrossIcon, MinusIcon, StopIcon } from "./icons";
 
-const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "neutral"> = {
-  fixed: "ok",
-  running: "info",
+type Tone = "pass" | "fail" | "warn" | "live" | "neutral";
+
+/**
+ * Every status maps to one review-label tone. The pass tone (verified green) is
+ * reserved for outcomes where validation actually passed; nothing else uses it.
+ */
+const STATUS_TONE: Record<string, Tone> = {
+  fixed: "pass",
+  succeeded: "neutral",
+  completed: "neutral",
+  running: "live",
   queued: "neutral",
-  "tests-failed": "warn",
-  "budget-exhausted": "warn",
-  "patch-invalid": "danger",
-  "sandbox-failed": "danger",
-  error: "danger",
+  "tests-failed": "fail",
+  "budget-exhausted": "fail",
+  "patch-invalid": "fail",
+  "sandbox-failed": "warn",
+  timeout: "warn",
+  "setup-failed": "warn",
+  unavailable: "warn",
+  "internal-error": "warn",
+  error: "warn",
+  failed: "warn",
   cancelled: "neutral",
-  succeeded: "ok",
-  failed: "danger",
 };
 
 const STATUS_HELP: Record<string, string> = {
@@ -31,14 +43,90 @@ const STATUS_HELP: Record<string, string> = {
   queued: "Waiting for a worker.",
 };
 
+/** A finished job (not a validation) keeps a check, in ink rather than verdict green. */
+const DONE = new Set(["succeeded", "completed"]);
+
+function toneIcon(tone: Tone, status: string): JSX.Element {
+  if (DONE.has(status)) return <CheckIcon />;
+  switch (tone) {
+    case "pass":
+      return <CheckIcon />;
+    case "fail":
+      return <CrossIcon />;
+    case "warn":
+      return <AlertIcon />;
+    case "live":
+      return <ClockIcon />;
+    default:
+      return <MinusIcon />;
+  }
+}
+
+export function statusTone(status: string): Tone {
+  return STATUS_TONE[status] ?? "neutral";
+}
+
 export function StatusBadge({ status }: { status: RunStatus | string }): JSX.Element {
-  const tone = STATUS_TONE[status] ?? "neutral";
-  const className = tone === "neutral" ? "badge" : `badge badge-${tone}`;
+  const tone = statusTone(status);
   const live = status === "running" || status === "queued";
   return (
-    <span className={className} title={STATUS_HELP[status] ?? status}>
-      <span className={live ? "badge-dot badge-pulse" : "badge-dot"} aria-hidden="true" />
+    <span
+      className={`label label-${tone}${live ? " badge-pulse" : ""}`}
+      title={STATUS_HELP[status] ?? status}
+    >
+      {toneIcon(tone, status)}
       {status}
+    </span>
+  );
+}
+
+function scoreFor(status: string): string {
+  const tone = statusTone(status);
+  return tone === "pass" ? "+1" : tone === "fail" || tone === "warn" ? "−1" : "0";
+}
+
+/** The verdict score as a small square: +1 verified, −1 did not pass, 0 pending. */
+export function ScoreSquare({ status }: { status: string }): JSX.Element {
+  const score = scoreFor(status);
+  return (
+    <span className={`score-square verdict-${statusTone(status)}`} title={`Verified ${score}`}>
+      {score}
+    </span>
+  );
+}
+
+/**
+ * The change page's score, in the vocabulary of a review tool: validation
+ * passing is "Verified +1", a finished run that did not pass is "Verified −1",
+ * and a run still going has no score yet.
+ */
+export function Verdict({ status, stopReason }: { status: string; stopReason: string | null }) {
+  const tone = statusTone(status);
+  const score = scoreFor(status);
+  return (
+    <div className={`verdict verdict-${tone}`}>
+      <div className="verdict-score" aria-hidden="true">
+        {score}
+      </div>
+      <div>
+        <div className="verdict-label">
+          Verified <span className="visually-hidden">{score}</span>
+        </div>
+        <div className="verdict-status">
+          <StatusBadge status={status} />
+          {stopReason && stopReason !== status ? (
+            <span className="verdict-reason mono">{stopReason}</span>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Tag({ children, title }: { children: ReactNode; title?: string }) {
+  return (
+    <span className="tag" title={title}>
+      {children}
     </span>
   );
 }
@@ -68,11 +156,11 @@ export function ErrorBanner({
 
 export function Loading({ label = "Loading" }: { label?: string }): JSX.Element {
   return (
-    <div role="status" aria-live="polite">
+    <div role="status" aria-live="polite" className="loading">
       <span className="visually-hidden">{label}</span>
-      <div className="skeleton" style={{ width: "40%" }} />
-      <div className="skeleton" style={{ width: "75%" }} />
-      <div className="skeleton" style={{ width: "60%" }} />
+      <div className="skeleton" style={{ width: "32%" }} />
+      <div className="skeleton skeleton-title" style={{ width: "68%" }} />
+      <div className="skeleton" style={{ width: "54%" }} />
     </div>
   );
 }
@@ -86,12 +174,16 @@ export function EmptyState({
 }): JSX.Element {
   return (
     <div className="empty">
-      <h3>{title}</h3>
-      {children}
+      <StopIcon />
+      <div>
+        <h3>{title}</h3>
+        {children}
+      </div>
     </div>
   );
 }
 
+/** A labelled value in a change-info panel. */
 export function Metric({
   label,
   value,
@@ -102,10 +194,12 @@ export function Metric({
   sub?: ReactNode;
 }): JSX.Element {
   return (
-    <div className="metric">
-      <div className="label">{label}</div>
-      <div className="value">{value}</div>
-      {sub ? <div className="sub">{sub}</div> : null}
+    <div className="info-row">
+      <dt>{label}</dt>
+      <dd>
+        <span className="info-value">{value}</span>
+        {sub ? <span className="info-sub">{sub}</span> : null}
+      </dd>
     </div>
   );
 }
@@ -131,7 +225,7 @@ export function formatCost(usd: number, known: boolean): string {
   return `$${usd.toFixed(3)}`;
 }
 
-export function formatTime(iso: string | null): string {
+export function formatTime(iso: string | null, { seconds = true } = {}): string {
   if (!iso) return "—";
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -140,7 +234,7 @@ export function formatTime(iso: string | null): string {
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
+    ...(seconds ? { second: "2-digit" } : {}),
   });
 }
 

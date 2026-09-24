@@ -12,6 +12,8 @@ function run(overrides: Partial<RunSummary> = {}): RunSummary {
     id: "run_01abc",
     repository_id: "repo_1",
     issue_id: "task_1",
+    issue_title: "percentage() raises ZeroDivisionError",
+    repository_slug: "calc_service",
     model: "mock:deterministic",
     status: "fixed",
     state: "FINISHED",
@@ -42,7 +44,7 @@ function renderPage() {
 }
 
 describe("RunsPage", () => {
-  it("renders runs with status, model and token totals", async () => {
+  it("lists each run under its issue as the subject, with verdict, model and tokens", async () => {
     vi.spyOn(api, "listRuns").mockResolvedValue({
       items: [run()],
       total: 1,
@@ -50,8 +52,12 @@ describe("RunsPage", () => {
       offset: 0,
     });
     renderPage();
-    expect(await screen.findByText("run_01abc")).toBeInTheDocument();
+    const subject = await screen.findByRole("link", {
+      name: "percentage() raises ZeroDivisionError",
+    });
+    expect(subject).toHaveAttribute("href", "/runs/run_01abc");
     const row = screen.getByRole("row", { name: /run_01abc/ });
+    expect(within(row).getByText(/calc_service/)).toBeInTheDocument();
     expect(within(row).getByText("fixed")).toBeInTheDocument();
     expect(within(row).getByText("mock:deterministic")).toBeInTheDocument();
     expect(within(row).getByText("5,400")).toBeInTheDocument();

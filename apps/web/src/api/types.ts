@@ -39,6 +39,8 @@ export interface RunSummary {
   id: string;
   repository_id: string;
   issue_id: string;
+  issue_title: string;
+  repository_slug: string;
   model: string;
   status: RunStatus;
   state: string;
