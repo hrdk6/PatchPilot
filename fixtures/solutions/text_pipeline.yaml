@@ -1,0 +1,51 @@
+solutions:
+  - name: text-pipeline-normalize-punctuation
+    summary: Strip surrounding punctuation in normalize() so token variants merge.
+    tags: [python, import-graph, two-hunk]
+    plan:
+      root_cause: >-
+        analytics.word_counts() delegates to tokenizer.normalize(), which only
+        lowercases. Trailing punctuation therefore survives into the counter, so
+        "Ship.", "Ship," and "ship" are counted as three distinct tokens. The
+        failing tests are in the analytics module but the defect is one import
+        hop away in the tokenizer.
+      files_to_change:
+        - text_pipeline/tokenizer.py
+      tests_to_run:
+        - tests/test_analytics.py
+      patch_strategy: >-
+        Add a module-level regex that matches leading and trailing non-word
+        characters and apply it inside normalize(), leaving tokenize() and the
+        analytics layer unchanged.
+      assumptions:
+        - Only leading and trailing punctuation is removed; intra-word characters
+          such as hyphens are left alone.
+      uncertainties:
+        - Unicode punctuation is handled by the word-character class rather than
+          an explicit list.
+      confidence: 0.82
+    edits:
+      - path: text_pipeline/tokenizer.py
+        find: |
+          SPLIT_RE = re.compile(r"\s+")
+        replace: |
+          SPLIT_RE = re.compile(r"\s+")
+
+          EDGE_PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
+      - path: text_pipeline/tokenizer.py
+        find: |
+          def normalize(word: str) -> str:
+              """Normalise a single word for counting.
+
+              Words are lowercased and surrounding punctuation is removed so that
+              ``"Ship."`` and ``"ship"`` are counted as the same token.
+              """
+              return word.lower()
+        replace: |
+          def normalize(word: str) -> str:
+              """Normalise a single word for counting.
+
+              Words are lowercased and surrounding punctuation is removed so that
+              ``"Ship."`` and ``"ship"`` are counted as the same token.
+              """
+              return EDGE_PUNCTUATION_RE.sub("", word.lower())

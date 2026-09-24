@@ -1,0 +1,12 @@
+diff --git a/calc_service/operations.py b/calc_service/operations.py
+--- a/calc_service/operations.py
++++ b/calc_service/operations.py
+@@ -19,6 +19,8 @@
+     A whole of zero means "nothing was expected", which should report 0.0 rather
+     than raising, because the reporting layer calls this for empty buckets.
+     """
++    if whole == 0:
++        return 0.0
+     return part / whole * 100.0
+ 
+ 

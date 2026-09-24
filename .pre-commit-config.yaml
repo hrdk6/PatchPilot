@@ -1,0 +1,46 @@
+# Fast checks before every commit. Install with:
+#   pre-commit install
+#
+# The heavy checks (pytest, mypy, the frontend suite) stay in CI: a pre-commit
+# hook that takes a minute is a pre-commit hook people bypass.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^fixtures/reference_patches/
+      - id: end-of-file-fixer
+        exclude: ^fixtures/reference_patches/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: no-env-file
+        name: refuse to commit a .env
+        entry: .env must never be committed; use .env.example
+        language: fail
+        files: ^\.env$
+
+      # Runs with whichever `python` is on PATH, so it needs the project's venv
+      # active (it imports patchpilot). It only fires when fixtures change.
+      - id: reference-patches-current
+        name: reference patches match the scripted solutions
+        entry: python infra/scripts/generate_reference_patches.py
+        language: system
+        pass_filenames: false
+        files: ^fixtures/(repos|solutions)/

@@ -1,0 +1,51 @@
+# Scripted repair replayed by the `mock:*` adapters.
+#
+# This file lives OUTSIDE fixtures/repos/ on purpose: nothing inside a fixture
+# repository may tell a model where the bug is, or a benchmark comparing real
+# models would be measuring how well they read the answer key.
+#
+# A solution is selected when every `find` anchor below is present verbatim in
+# the workspace, so it cannot fire against the wrong repository. Anchors start at
+# a column-0 line so YAML block indentation stays unambiguous.
+solutions:
+  - name: calc-service-zero-denominator
+    summary: Return 0.0 from percentage() when the denominator is zero.
+    tags: [python, guard-clause, single-file]
+    plan:
+      root_cause: >-
+        percentage() divides by `whole` without checking for zero, so any caller
+        with an empty bucket raises ZeroDivisionError instead of reporting 0%.
+        The docstring already states the intended behaviour.
+      files_to_change:
+        - calc_service/operations.py
+      tests_to_run:
+        - tests/test_operations.py::test_percentage_with_zero_whole
+        - tests/test_reporting.py::test_summarize_handles_empty_bucket
+      patch_strategy: >-
+        Add an early return of 0.0 when `whole` is zero, matching the documented
+        contract, and leave the arithmetic path untouched.
+      assumptions:
+        - The documented "0.0 rather than raising" contract is authoritative.
+      uncertainties:
+        - A negative `whole` is still allowed; the issue does not mention it.
+      confidence: 0.86
+    edits:
+      - path: calc_service/operations.py
+        find: |
+          def percentage(part: float, whole: float) -> float:
+              """Return ``part`` as a percentage of ``whole``.
+
+              A whole of zero means "nothing was expected", which should report 0.0 rather
+              than raising, because the reporting layer calls this for empty buckets.
+              """
+              return part / whole * 100.0
+        replace: |
+          def percentage(part: float, whole: float) -> float:
+              """Return ``part`` as a percentage of ``whole``.
+
+              A whole of zero means "nothing was expected", which should report 0.0 rather
+              than raising, because the reporting layer calls this for empty buckets.
+              """
+              if whole == 0:
+                  return 0.0
+              return part / whole * 100.0

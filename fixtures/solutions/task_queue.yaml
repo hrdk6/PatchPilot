@@ -1,0 +1,49 @@
+solutions:
+  - name: task-queue-pagination-off-by-one
+    summary: Compute the slice start from a 1-indexed page number.
+    tags: [python, off-by-one, contract]
+    plan:
+      root_cause: >-
+        paginate() documents 1-indexed pages but computes `start = page *
+        per_page`, which is the 0-indexed formula. Page 1 therefore skips the
+        first per_page items and every later page is shifted by one page.
+      files_to_change:
+        - task_queue/pagination.py
+      tests_to_run:
+        - tests/test_pagination.py
+      patch_strategy: >-
+        Change the start offset to `(page - 1) * per_page`. The guard clauses and
+        the Page dataclass already implement the documented contract and stay as
+        they are.
+      assumptions:
+        - The 1-indexed contract in the docstring and tests is authoritative.
+      uncertainties:
+        - Callers that already compensated for the old behaviour would need
+          updating; none exist in this repository.
+      confidence: 0.9
+    edits:
+      - path: task_queue/pagination.py
+        find: |
+          def paginate(items: list[T], page: int = 1, per_page: int = DEFAULT_PAGE_SIZE) -> Page:
+              """Return one 1-indexed page of ``items``.
+
+              ``page=1`` must return the first ``per_page`` items. Pages beyond the end
+              return an empty item list rather than raising.
+              """
+              if per_page <= 0:
+                  raise ValueError("per_page must be positive")
+              if page < 1:
+                  raise ValueError("page is 1-indexed")
+              start = page * per_page
+        replace: |
+          def paginate(items: list[T], page: int = 1, per_page: int = DEFAULT_PAGE_SIZE) -> Page:
+              """Return one 1-indexed page of ``items``.
+
+              ``page=1`` must return the first ``per_page`` items. Pages beyond the end
+              return an empty item list rather than raising.
+              """
+              if per_page <= 0:
+                  raise ValueError("per_page must be positive")
+              if page < 1:
+                  raise ValueError("page is 1-indexed")
+              start = (page - 1) * per_page

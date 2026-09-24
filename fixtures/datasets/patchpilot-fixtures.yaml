@@ -1,0 +1,109 @@
+name: patchpilot-fixtures
+description: >-
+  Three reproducible bug-fix tasks in the fixture repositories shipped with
+  PatchPilot. They need no network access, no API key and no GitHub token, which
+  is what makes them safe to run in CI. Repository paths are relative to this
+  file; each task is pinned by the content digest ingestion computes, so the same
+  dataset always presents the same bytes to every model.
+
+tasks:
+  - id: calc-service-zero-division
+    title: percentage() raises ZeroDivisionError for an empty bucket
+    repository_url: ../repos/calc_service
+    difficulty: easy
+    tags: [python, guard-clause, single-file]
+    issue: |
+      ## Summary
+
+      `calc_service.operations.percentage()` raises `ZeroDivisionError` whenever
+      a bucket expected zero items.
+
+      ## Reproduction
+
+      ```python
+      from calc_service.operations import percentage
+      percentage(0, 0)   # ZeroDivisionError: division by zero
+      ```
+
+      The reporting layer calls this for every bucket, so a single empty bucket
+      takes down the whole report:
+
+      ```
+      >       return part / whole * 100.0
+      E       ZeroDivisionError: division by zero
+      ```
+
+      ## Expected
+
+      An empty bucket expected nothing and missed nothing, so it should report
+      0.0%. The docstring on `percentage()` already says this is the intended
+      behaviour.
+    baseline_command: python -m pytest -q
+    validation_command: python -m pytest -q
+    expected_files:
+      - calc_service/operations.py
+    reference_patch: ../reference_patches/calc-service-zero-division.diff
+
+  - id: text-pipeline-punctuation
+    title: Word counts treat "Ship." and "ship" as different tokens
+    repository_url: ../repos/text_pipeline
+    difficulty: medium
+    tags: [python, import-graph, multi-hunk]
+    issue: |
+      ## Summary
+
+      `text_pipeline.analytics.top_words()` reports inflated vocabulary sizes and
+      splits counts across punctuation variants of the same word.
+
+      ## Reproduction
+
+      ```python
+      from text_pipeline.analytics import word_counts
+      word_counts("Ship the code. Ship the tests! Ship, then measure.")
+      # Counter({'ship': 1, 'ship.': 1, 'ship,': 1, ...})
+      ```
+
+      ## Expected
+
+      `"Ship."`, `"Ship,"` and `"ship"` are the same token, so that sample should
+      report `ship` three times and a vocabulary of five distinct tokens.
+
+      The analytics module itself looks right; the counting happens downstream of
+      whatever produces the tokens.
+    baseline_command: python -m pytest -q
+    validation_command: python -m pytest -q
+    expected_files:
+      - text_pipeline/tokenizer.py
+    reference_patch: ../reference_patches/text-pipeline-punctuation.diff
+
+  - id: task-queue-pagination
+    title: paginate() skips the first page of results
+    repository_url: ../repos/task_queue
+    difficulty: medium
+    tags: [python, off-by-one, contract]
+    issue: |
+      ## Summary
+
+      `task_queue.pagination.paginate()` documents 1-indexed pages, but page 1
+      returns the *second* page of results.
+
+      ## Reproduction
+
+      ```python
+      from task_queue.pagination import paginate
+      paginate(["a", "b", "c", "d", "e"], page=1, per_page=2)
+      # Page(items=['c', 'd'], ...)  -- expected ['a', 'b']
+      ```
+
+      Every page is shifted by one, so the first `per_page` items are
+      unreachable through the API and the last page comes back empty.
+
+      ## Expected
+
+      `page=1` returns the first `per_page` items. The 1-indexed contract in the
+      docstring is correct and should not change.
+    baseline_command: python -m pytest -q
+    validation_command: python -m pytest -q
+    expected_files:
+      - task_queue/pagination.py
+    reference_patch: ../reference_patches/task-queue-pagination.diff

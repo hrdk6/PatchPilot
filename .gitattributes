@@ -1,0 +1,17 @@
+# Normalise line endings in the repository to LF on every platform.
+#
+# Without this, a Windows checkout with core.autocrlf=true and a Linux checkout
+# disagree about what "unchanged" means, shell scripts and Dockerfiles break
+# when they gain a carriage return, and a PowerShell `>>` can silently turn a
+# text file into UTF-16 that GitHub then renders as a binary blob.
+* text=auto eol=lf
+
+# The reference patches are compared byte-for-byte against regenerated output
+# in CI; they must never be rewritten on checkout.
+fixtures/reference_patches/*.diff text eol=lf -whitespace
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.woff2 binary

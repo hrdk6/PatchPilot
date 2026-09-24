@@ -1,0 +1,21 @@
+diff --git a/text_pipeline/tokenizer.py b/text_pipeline/tokenizer.py
+--- a/text_pipeline/tokenizer.py
++++ b/text_pipeline/tokenizer.py
+@@ -5,6 +5,8 @@
+ import re
+ 
+ SPLIT_RE = re.compile(r"\s+")
++
++EDGE_PUNCTUATION_RE = re.compile(r"^\W+|\W+$")
+ 
+ STOPWORDS = frozenset({"the", "a", "an", "and", "or", "of", "to", "in", "is"})
+ 
+@@ -15,7 +17,7 @@
+     Words are lowercased and surrounding punctuation is removed so that
+     ``"Ship."`` and ``"ship"`` are counted as the same token.
+     """
+-    return word.lower()
++    return EDGE_PUNCTUATION_RE.sub("", word.lower())
+ 
+ 
+ def tokenize(text: str) -> list[str]:

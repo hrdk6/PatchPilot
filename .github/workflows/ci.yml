@@ -1,0 +1,220 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI never talks to a model provider. Every test uses the deterministic mock
+  # adapters, the local hash embedder and the in-process vector store.
+  PATCHPILOT_ENVIRONMENT: ci
+  PATCHPILOT_LOG_LEVEL: WARNING
+  PATCHPILOT_LOG_JSON: "false"
+  PATCHPILOT_SANDBOX_BACKEND: local
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Ruff (format)
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy packages apps/api
+
+      - name: Tests
+        run: pytest -q --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint
+        run: npx eslint .
+
+      - name: Tests
+        run: npm run test
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: apps/web/dist
+          if-no-files-found: error
+
+  smoke:
+    name: End-to-end smoke (offline demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Migrations apply and roll back cleanly
+        run: |
+          patchpilot db upgrade
+          patchpilot db current
+          patchpilot db downgrade base
+          patchpilot db upgrade
+          patchpilot db current
+
+      - name: Sandbox status
+        run: patchpilot sandbox
+
+      - name: Reference patches are current
+        run: |
+          python infra/scripts/generate_reference_patches.py
+          git diff --exit-code fixtures/reference_patches
+
+      - name: Demo — every fixture is ingested, indexed, patched and verified
+        run: patchpilot demo
+
+      - name: Benchmark — two models on the same task set
+        run: |
+          patchpilot bench patchpilot-fixtures \
+            -m mock:deterministic \
+            -m mock:stubborn \
+            --output benchmark-output
+
+      - name: Show the benchmark report
+        run: cat benchmark-output/patchpilot-fixtures.md
+
+      - name: Upload benchmark reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports
+          path: benchmark-output/
+          if-no-files-found: error
+
+  docker:
+    name: Container images build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/api.Dockerfile
+          push: false
+          load: true
+          tags: patchpilot-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/web.Dockerfile
+          push: false
+          load: true
+          tags: patchpilot-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Docker sandbox tests against a real daemon
+        env:
+          PATCHPILOT_SANDBOX_BACKEND: docker
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          docker pull python:3.12-slim-bookworm
+          pytest tests/test_sandbox.py -q -m "not slow"
+
+  compose:
+    name: Full stack boots (docker compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # --wait blocks until every service reports healthy, so a broken
+      # healthcheck fails here rather than leaving `compose up` hanging for users.
+      - name: Build and start every service
+        run: docker compose -f infra/docker-compose.yml up --build --detach --wait --wait-timeout 300
+
+      - name: The dashboard is served and proxies the API
+        run: |
+          curl --fail --silent --show-error http://localhost:5173/ | grep -q 'id="root"'
+          curl --fail --silent --show-error http://localhost:5173/api/v1/system
+          curl --fail --silent --show-error http://localhost:8000/health
+
+      - name: Service logs
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f infra/docker-compose.yml down --volumes

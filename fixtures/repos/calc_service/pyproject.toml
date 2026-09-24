@@ -1,0 +1,8 @@
+[project]
+name = "calc-service"
+version = "0.1.0"
+description = "PatchPilot fixture: a tiny reporting service with a real bug"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

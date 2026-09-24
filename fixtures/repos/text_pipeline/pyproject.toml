@@ -1,0 +1,8 @@
+[project]
+name = "text-pipeline"
+version = "0.1.0"
+description = "PatchPilot fixture: analytics bug whose root cause lives one import away"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

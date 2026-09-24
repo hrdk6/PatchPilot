@@ -1,0 +1,39 @@
+# Build context for infra/api.Dockerfile and infra/web.Dockerfile (context: repo root).
+#
+# Without this, `COPY apps/web/ ./` would copy the host's node_modules over the
+# ones `npm ci` just installed -- native binaries such as esbuild's built for the
+# wrong platform -- and every build would upload the virtualenv to the daemon.
+
+.git
+.github
+.idea
+.vscode
+
+# Python
+.venv
+venv
+*.egg-info
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Node
+apps/web/node_modules
+apps/web/dist
+apps/web/coverage
+**/*.tsbuildinfo
+
+# Runtime data and local secrets
+.patchpilot*
+*.db
+*.db-shm
+*.db-wal
+benchmark-output
+.env
+.env.*
+!.env.example

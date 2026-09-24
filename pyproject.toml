@@ -1,0 +1,100 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchpilot"
+version = "0.1.0"
+description = "PatchPilot - autonomous repository-level bug-fix agent and evaluation platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Hardik" }]
+keywords = ["llm", "agents", "program-repair", "code-retrieval", "sandbox", "evaluation", "langgraph"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: FastAPI",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.7",
+    "sqlalchemy>=2.0.30",
+    "alembic>=1.13",
+    "httpx>=0.27",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "langgraph>=0.2.20",
+    "qdrant-client>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/hrdk6/PatchPilot"
+Documentation = "https://github.com/hrdk6/PatchPilot/tree/main/docs"
+Issues = "https://github.com/hrdk6/PatchPilot/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.16,<0.17",
+    "mypy>=1.11",
+    "types-PyYAML",
+    "pre-commit>=3.8",
+]
+postgres = ["psycopg[binary]>=3.2"]
+
+[project.scripts]
+patchpilot = "patchpilot_api.cli:main"
+
+[tool.setuptools.packages.find]
+where = [
+    "packages/core",
+    "packages/indexer",
+    "packages/agent",
+    "packages/sandbox",
+    "packages/evals",
+    "apps/api",
+]
+include = ["patchpilot_*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "docker: requires a working Docker daemon",
+    "integration: end-to-end test across packages",
+    "slow: takes more than a couple of seconds",
+]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# Generated migration files are not hand-written; formatting them is noise.
+extend-exclude = [".venv", "apps/web", "apps/api/patchpilot_api/alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["B008", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]
+"fixtures/**" = ["E501", "B", "SIM", "RUF", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+# Analyse for the deployment target (containers, CI) rather than for whichever
+# machine happens to run the check, so POSIX-only branches are type-checked.
+platform = "linux"
+warn_unused_configs = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+exclude = '(fixtures/|apps/web/|\.venv/|alembic/versions/)'

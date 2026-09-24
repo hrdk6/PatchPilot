@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# PatchPilot runtime data (workspaces, artifacts, cached clones, vectors).
+# The glob covers ad-hoc data dirs such as .patchpilot-demo used by the docs.
+.patchpilot*/
+# SQLite runs in WAL mode (see apps/api/db.py), which leaves -shm/-wal sidecars.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+benchmark-output/
+
+# Node
+node_modules/
+apps/web/dist/
+apps/web/coverage/
+.vite/
+*.tsbuildinfo
+
+# Local secrets and editor state
+.env
+.env.local
+.idea/
+.claude/
+.vscode/
+.DS_Store
