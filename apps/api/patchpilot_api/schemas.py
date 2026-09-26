@@ -353,6 +353,7 @@ class SystemInfoResponse(ApiModel):
     max_repair_attempts: int
     sandbox: SandboxStatusResponse
     worker_running: bool
+    workers: int = Field(description="Worker processes that reported within the lease")
     queued_jobs: int
     auth_enabled: bool
     policy: RunPolicyResponse

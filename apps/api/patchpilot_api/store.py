@@ -27,7 +27,7 @@ from patchpilot_core.models import (
     StateTransition,
 )
 from patchpilot_indexer import RepositoryIndex
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,7 @@ from .orm import (
     Run,
     RunEvent,
     SymbolRow,
+    WorkerRow,
 )
 
 
@@ -746,6 +747,65 @@ def close_run(
         row.error = error
     row.finished_at = utcnow()
     return row
+
+
+# --------------------------------------------------------------------------- #
+# Worker registry
+# --------------------------------------------------------------------------- #
+def register_worker(
+    session: Session,
+    identifier: str,
+    *,
+    hostname: str,
+    pid: int,
+    concurrency: int,
+    sandbox: dict[str, Any],
+) -> WorkerRow:
+    row = session.get(WorkerRow, identifier)
+    if row is None:
+        row = WorkerRow(id=identifier, hostname=hostname, pid=pid, started_at=utcnow())
+        session.add(row)
+    row.concurrency = concurrency
+    row.sandbox = sandbox
+    row.heartbeat_at = utcnow()
+    # Rows of workers that vanished without deregistering, long past any lease.
+    session.execute(
+        delete(WorkerRow).where(WorkerRow.heartbeat_at < utcnow() - timedelta(days=1)),
+        execution_options={"synchronize_session": False},
+    )
+    session.flush()
+    return row
+
+
+def heartbeat_worker(
+    session: Session, identifier: str, *, sandbox: dict[str, Any] | None = None
+) -> None:
+    values: dict[str, Any] = {"heartbeat_at": utcnow()}
+    if sandbox is not None:
+        values["sandbox"] = sandbox
+    session.execute(
+        update(WorkerRow).where(WorkerRow.id == identifier).values(**values),
+        execution_options={"synchronize_session": False},
+    )
+
+
+def deregister_worker(session: Session, identifier: str) -> None:
+    session.execute(
+        delete(WorkerRow).where(WorkerRow.id == identifier),
+        execution_options={"synchronize_session": False},
+    )
+
+
+def live_workers(session: Session, *, lease_seconds: float) -> list[WorkerRow]:
+    """Workers that have reported within the lease, freshest first."""
+    cutoff = utcnow() - timedelta(seconds=lease_seconds)
+    return list(
+        session.scalars(
+            select(WorkerRow)
+            .where(WorkerRow.heartbeat_at >= cutoff)
+            .order_by(WorkerRow.heartbeat_at.desc())
+        )
+    )
 
 
 def resumable_runs(session: Session) -> list[Run]:

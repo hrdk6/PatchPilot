@@ -317,6 +317,27 @@ class Job(Base):
     __table_args__ = (Index("ix_jobs_status_created", "status", "created_at"),)
 
 
+class WorkerRow(Base):
+    """A live worker process, as it last reported itself.
+
+    Workers may run in other processes or containers than the API, so the API
+    learns whether any are alive -- and what sandbox they actually have -- from
+    here rather than from its own process.
+    """
+
+    __tablename__ = "workers"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    pid: Mapped[int] = mapped_column(Integer, nullable=False)
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
+    sandbox: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (Index("ix_workers_heartbeat", "heartbeat_at"),)
+
+
 class BenchmarkRun(Base):
     __tablename__ = "benchmark_runs"
 

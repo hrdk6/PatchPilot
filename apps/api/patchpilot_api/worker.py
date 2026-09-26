@@ -31,6 +31,7 @@ from patchpilot_core.config import Settings, get_settings
 from patchpilot_core.enums import JobStatus
 from patchpilot_core.errors import PatchPilotError
 from patchpilot_core.logging import get_logger, log_context, new_correlation_id
+from patchpilot_sandbox import select_sandbox
 
 from . import retention, store
 from .db import session_scope
@@ -63,6 +64,7 @@ class Worker:
         if self._threads:
             return
         self._stop.clear()
+        self.register()
         self.recover_orphans()
         self.sweep_debris()
         for number in range(self.concurrency):
@@ -113,6 +115,35 @@ class Worker:
             handle_job_failure(job_type, payload, error, self.settings)
         return len(requeued)
 
+    # ---------------------------------------------------------------- registry
+    def sandbox_report(self) -> dict[str, Any]:
+        """The sandbox this worker would run commands in, as the API shows it."""
+        try:
+            return select_sandbox(self.settings).describe()
+        except Exception as exc:  # pragma: no cover - defensive
+            return {"backend": "unknown", "available": False, "isolated": False, "reason": str(exc)}
+
+    def register(self) -> None:
+        try:
+            with session_scope(self.settings) as session:
+                store.register_worker(
+                    session,
+                    self.worker_id,
+                    hostname=socket.gethostname(),
+                    pid=os.getpid(),
+                    concurrency=self.concurrency,
+                    sandbox=self.sandbox_report(),
+                )
+        except Exception:
+            logger.warning("could not register the worker", exc_info=True)
+
+    def deregister(self) -> None:
+        try:
+            with session_scope(self.settings) as session:
+                store.deregister_worker(session, self.worker_id)
+        except Exception:
+            logger.warning("could not deregister the worker", exc_info=True)
+
     def sweep_debris(self) -> None:
         """Remove workspaces and staging directories a crash left behind."""
         try:
@@ -146,6 +177,7 @@ class Worker:
             self._maintenance.join(timeout=timeout)
             self._maintenance = None
         self._threads.clear()
+        self.deregister()
         with self._lock:
             unfinished = sorted(self._active)
         if unfinished:
@@ -188,27 +220,33 @@ class Worker:
         # a worker that restarts often still gets round to it.
         last_retention = time.monotonic() - retain_every
         while not self._stop.wait(heartbeat):
-            self.heartbeat()
             now = time.monotonic()
-            if now - last_sweep >= sweep_every:
+            sweep = now - last_sweep >= sweep_every
+            self.heartbeat(report_sandbox=sweep)
+            if sweep:
                 last_sweep = now
                 self.recover_orphans()
             if now - last_retention >= retain_every:
                 last_retention = now
                 self.apply_retention()
 
-    def heartbeat(self) -> int:
+    def heartbeat(self, *, report_sandbox: bool = False) -> int:
+        """Renew this worker's registration and the leases on its running jobs.
+
+        Returns how many of its running jobs it still holds.
+        """
         with self._lock:
             active = sorted(self._active)
-        if not active:
-            return 0
+        # Probed outside the transaction: `docker info` can take a while.
+        sandbox = self.sandbox_report() if report_sandbox else None
         try:
             with session_scope(self.settings) as session:
+                store.heartbeat_worker(session, self.worker_id, sandbox=sandbox)
                 held = store.heartbeat_jobs(session, active, self.worker_id)
         except Exception:
             logger.warning("could not renew job leases", exc_info=True)
             return 0
-        if held < len(active):
+        if active and held < len(active):
             logger.warning(
                 "lost the lease on a running job; another worker may have requeued it",
                 extra={"held": held, "running": len(active)},

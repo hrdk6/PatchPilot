@@ -82,6 +82,23 @@ def system(session: Session = Depends(get_db)) -> SystemInfoResponse:
     queued = store.count_jobs(session, JobStatus.QUEUED, JobStatus.RUNNING)
     from ..worker import get_worker
 
+    # Workers may live in other processes or containers; each one reports its
+    # liveness and the sandbox it actually has. This process's own view is used
+    # only when it runs the worker itself, or when no worker has reported.
+    live = store.live_workers(session, lease_seconds=settings.worker_lease_seconds)
+    embedded = get_worker(settings).running
+    if embedded or not live:
+        sandbox_status = _cached_sandbox_status(settings)
+    else:
+        report = live[0].sandbox or {}
+        sandbox_status = SandboxStatusResponse(
+            backend=str(report.get("backend", "unknown")),
+            available=bool(report.get("available", False)),
+            isolated=bool(report.get("isolated", False)),
+            reason=str(report.get("reason", "")),
+            controls=dict(report.get("controls") or {}),
+        )
+
     return SystemInfoResponse(
         version=__version__,
         environment=settings.environment,
@@ -90,8 +107,9 @@ def system(session: Session = Depends(get_db)) -> SystemInfoResponse:
         embedding_provider=settings.embedding_provider,
         default_model=settings.default_model,
         max_repair_attempts=settings.max_repair_attempts,
-        sandbox=_cached_sandbox_status(settings),
-        worker_running=get_worker(settings).running,
+        sandbox=sandbox_status,
+        worker_running=embedded or bool(live),
+        workers=len(live),
         queued_jobs=queued,
         auth_enabled=settings.auth_enabled,
         policy=RunPolicyResponse(

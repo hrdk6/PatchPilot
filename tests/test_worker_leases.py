@@ -241,3 +241,54 @@ class TestHousekeeping:
         )
         assert outcome.summary.run_id
         assert not (settings.workspace_root / outcome.summary.run_id).exists()
+
+
+class TestWorkerRegistry:
+    """The API learns about workers in other processes from the database."""
+
+    def test_a_worker_elsewhere_is_reported_with_its_sandbox(self, client: TestClient) -> None:
+        with session_scope() as session:
+            store.register_worker(
+                session,
+                "other-host:7:abc",
+                hostname="other-host",
+                pid=7,
+                concurrency=4,
+                sandbox={
+                    "backend": "docker",
+                    "available": True,
+                    "isolated": True,
+                    "reason": "docker daemon 27.1",
+                    "controls": {"network": "none"},
+                },
+            )
+        body = client.get("/api/v1/system").json()
+        # This test's API runs no worker of its own, as with
+        # PATCHPILOT_WORKER_ENABLED=false and a separate `patchpilot worker`.
+        assert body["worker_running"] is True
+        assert body["workers"] == 1
+        assert body["sandbox"]["backend"] == "docker"
+        assert body["sandbox"]["reason"] == "docker daemon 27.1"
+
+    def test_a_silent_worker_is_not_counted(self, client: TestClient) -> None:
+        with session_scope() as session:
+            row = store.register_worker(
+                session, "gone:1:x", hostname="gone", pid=1, concurrency=1, sandbox={}
+            )
+            row.heartbeat_at = store.utcnow() - timedelta(seconds=10_000)
+        body = client.get("/api/v1/system").json()
+        assert body["worker_running"] is False
+        assert body["workers"] == 0
+
+    def test_a_worker_registers_on_start_and_leaves_on_stop(self, client: TestClient) -> None:
+        worker = Worker(get_settings(), concurrency=1)
+        worker.start()
+        try:
+            with session_scope() as session:
+                live = store.live_workers(session, lease_seconds=60)
+                assert [row.id for row in live] == [worker.worker_id]
+                assert live[0].sandbox["backend"] == "local"
+        finally:
+            worker.stop()
+        with session_scope() as session:
+            assert store.live_workers(session, lease_seconds=60) == []

@@ -260,6 +260,7 @@ export interface SystemInfo {
   worker_running: boolean;
   queued_jobs: number;
   /** Optional so the dashboard still works against an older API. */
+  workers?: number;
   auth_enabled?: boolean;
   policy?: RunPolicy;
 }
