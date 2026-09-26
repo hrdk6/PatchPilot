@@ -8,16 +8,22 @@ renaming a column must not silently change the API.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from patchpilot_core.models import (
     ContextPackage,
     IssueSpec,
     RepositorySpec,
-    RunConfig,
-    SandboxLimits,
 )
 from pydantic import BaseModel, Field, model_validator
+
+# Bounds on free-text input. They exist so one request cannot make the server
+# hold, persist and prompt with an arbitrarily large payload.
+MAX_URL = 2000
+MAX_NAME = 200
+MAX_TITLE = 600
+MAX_ISSUE_TEXT = 100_000
+MAX_COMMAND = 2000
 
 
 class ApiModel(BaseModel):
@@ -36,10 +42,12 @@ class ErrorResponse(ApiModel):
 # Repositories and issues
 # --------------------------------------------------------------------------- #
 class RepositoryCreate(ApiModel):
-    url: str = Field(description="HTTPS URL, ssh remote, file:// URL or local path")
-    branch: str | None = None
-    commit_sha: str | None = None
-    name: str | None = None
+    url: str = Field(
+        max_length=MAX_URL, description="HTTPS URL, ssh remote, file:// URL or local path"
+    )
+    branch: str | None = Field(default=None, max_length=MAX_NAME)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    name: str | None = Field(default=None, max_length=MAX_NAME)
 
     def to_spec(self) -> RepositorySpec:
         return RepositorySpec(
@@ -113,40 +121,50 @@ class DependencyGraphResponse(ApiModel):
 # Runs
 # --------------------------------------------------------------------------- #
 class RunCreate(ApiModel):
-    repository_url: str
-    branch: str | None = None
-    commit_sha: str | None = None
-    repository_name: str | None = None
+    """A run request.
 
-    issue_number: int | None = None
-    issue_title: str | None = None
+    Every execution setting is optional: a field left out takes this server's
+    configured default. Values that are sent are checked against the server's
+    policy (``policy.build_run_config``), not merely against these schema bounds.
+    """
+
+    repository_url: str = Field(max_length=MAX_URL)
+    branch: str | None = Field(default=None, max_length=MAX_NAME)
+    commit_sha: str | None = Field(default=None, max_length=80)
+    repository_name: str | None = Field(default=None, max_length=MAX_NAME)
+
+    issue_number: int | None = Field(default=None, ge=1)
+    issue_title: str | None = Field(default=None, max_length=MAX_TITLE)
     issue_text: str | None = Field(
         default=None,
+        max_length=MAX_ISSUE_TEXT,
         description="Paste the issue body here to run without any GitHub access.",
     )
 
-    model: str = "mock:deterministic"
-    max_repair_attempts: int = Field(default=3, ge=1, le=10)
+    model: str | None = Field(default=None, max_length=120)
+    max_repair_attempts: int | None = Field(default=None, ge=1, le=10)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    retrieval_top_k: int = Field(default=12, ge=1, le=60)
+    retrieval_top_k: int | None = Field(default=None, ge=1, le=60)
 
-    setup_command: str | None = None
-    baseline_command: str | None = None
-    validation_command: str | None = None
-    lint_command: str | None = None
-    typecheck_command: str | None = None
-    reproduction_command: str | None = None
+    setup_command: str | None = Field(default=None, max_length=MAX_COMMAND)
+    baseline_command: str | None = Field(default=None, max_length=MAX_COMMAND)
+    validation_command: str | None = Field(default=None, max_length=MAX_COMMAND)
+    lint_command: str | None = Field(default=None, max_length=MAX_COMMAND)
+    typecheck_command: str | None = Field(default=None, max_length=MAX_COMMAND)
+    reproduction_command: str | None = Field(default=None, max_length=MAX_COMMAND)
 
     sandbox_backend: Literal["auto", "docker", "local"] = "auto"
-    sandbox_image: str | None = None
-    timeout_seconds: int = Field(default=180, ge=10, le=3600)
-    memory_mb: int = Field(default=1024, ge=128, le=16384)
-    cpus: float = Field(default=1.0, gt=0, le=16)
-    network: Literal["none", "bridge"] = "none"
+    sandbox_image: str | None = Field(default=None, max_length=300)
+    timeout_seconds: int | None = Field(default=None, ge=10, le=86_400)
+    memory_mb: int | None = Field(default=None, ge=128, le=262_144)
+    cpus: float | None = Field(default=None, gt=0, le=256)
+    network: Literal["none", "bridge"] | None = None
 
-    max_patch_files: int = Field(default=10, ge=1, le=100)
-    max_patch_lines: int = Field(default=400, ge=1, le=5000)
-    allowed_write_globs: list[str] = Field(default_factory=list)
+    max_patch_files: int | None = Field(default=None, ge=1, le=1000)
+    max_patch_lines: int | None = Field(default=None, ge=1, le=100_000)
+    allowed_write_globs: list[Annotated[str, Field(max_length=MAX_NAME)]] = Field(
+        default_factory=list, max_length=20
+    )
 
     @model_validator(mode="after")
     def _needs_an_issue(self) -> RunCreate:
@@ -160,31 +178,6 @@ class RunCreate(ApiModel):
             branch=self.branch,
             commit_sha=self.commit_sha,
             name=self.repository_name,
-        )
-
-    def to_run_config(self) -> RunConfig:
-        return RunConfig(
-            model=self.model,
-            temperature=self.temperature,
-            max_repair_attempts=self.max_repair_attempts,
-            setup_command=self.setup_command,
-            baseline_command=self.baseline_command,
-            validation_command=self.validation_command,
-            lint_command=self.lint_command,
-            typecheck_command=self.typecheck_command,
-            reproduction_command=self.reproduction_command,
-            retrieval_top_k=self.retrieval_top_k,
-            max_patch_files=self.max_patch_files,
-            max_patch_lines=self.max_patch_lines,
-            sandbox_backend=self.sandbox_backend,
-            sandbox_image=self.sandbox_image,
-            allowed_write_globs=self.allowed_write_globs,
-            limits=SandboxLimits(
-                cpus=self.cpus,
-                memory_mb=self.memory_mb,
-                timeout_seconds=self.timeout_seconds,
-                network=self.network,
-            ),
         )
 
 
@@ -387,9 +380,13 @@ class DatasetResponse(ApiModel):
 
 
 class BenchmarkCreate(ApiModel):
-    dataset: str = Field(description="Dataset name or path under fixtures/datasets")
-    models: list[str] = Field(min_length=1)
-    tags: list[str] = Field(default_factory=list)
+    dataset: str = Field(
+        max_length=MAX_NAME, description="Name of a dataset in the datasets directory"
+    )
+    models: list[Annotated[str, Field(max_length=120)]] = Field(min_length=1, max_length=10)
+    tags: list[Annotated[str, Field(max_length=MAX_NAME)]] = Field(
+        default_factory=list, max_length=20
+    )
 
 
 class BenchmarkResultResponse(ApiModel):
@@ -425,8 +422,8 @@ class BenchmarkResponse(ApiModel):
 
 
 class IssueLookupRequest(ApiModel):
-    repository_url: str
-    issue_number: int
+    repository_url: str = Field(max_length=MAX_URL)
+    issue_number: int = Field(ge=1)
 
 
 class IssueLookupResponse(ApiModel):

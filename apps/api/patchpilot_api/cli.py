@@ -14,7 +14,7 @@ from pathlib import Path
 import typer
 from patchpilot_core.config import get_settings, reset_settings
 from patchpilot_core.logging import configure_logging
-from patchpilot_core.models import RunConfig, SandboxLimits
+from patchpilot_core.models import RunConfig
 
 app = typer.Typer(
     add_completion=False,
@@ -141,7 +141,9 @@ def run(
     attempts: int = typer.Option(3, help="Maximum repair attempts"),
     validation_command: str | None = typer.Option(None, help="Command that must pass"),
     backend: str = typer.Option("auto", help="Sandbox backend: auto, docker or local"),
-    timeout: int = typer.Option(180, help="Per-command wall-clock limit in seconds"),
+    timeout: int | None = typer.Option(
+        None, help="Per-command wall-clock limit in seconds [default: server setting]"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print the result as JSON"),
 ) -> None:
     """Run the repair agent once, printing the state-machine timeline."""
@@ -163,7 +165,7 @@ def run(
         max_repair_attempts=attempts,
         validation_command=validation_command,
         sandbox_backend=backend,  # type: ignore[arg-type]
-        limits=SandboxLimits(timeout_seconds=timeout),
+        limits=settings.sandbox_limits(timeout_seconds=timeout),
     )
     outcome = run_agent(
         repository=RepositorySpec(url=repository),
@@ -294,10 +296,7 @@ def demo(
                     max_repair_attempts=settings.max_repair_attempts,
                     validation_command=task.validation_command,
                     baseline_command=task.baseline_command,
-                    limits=SandboxLimits(
-                        timeout_seconds=settings.sandbox_timeout_seconds,
-                        memory_mb=settings.sandbox_memory_mb,
-                    ),
+                    limits=settings.sandbox_limits(),
                 ),
                 settings=settings,
             )

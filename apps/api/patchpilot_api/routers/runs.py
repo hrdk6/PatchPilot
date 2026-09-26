@@ -5,12 +5,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from patchpilot_agent import resolve_issue
+from patchpilot_core.config import get_settings
 from patchpilot_core.enums import JobType, RunStatus
-from patchpilot_core.errors import RepositoryError
 from sqlalchemy.orm import Session
 
 from .. import store
 from ..db import get_db
+from ..policy import build_run_config, check_repository_source
 from ..schemas import (
     ArtifactResponse,
     AttemptResponse,
@@ -39,20 +40,24 @@ router = APIRouter(prefix="/runs", tags=["runs"])
     ),
 )
 def create(payload: RunCreate, session: Session = Depends(get_db)) -> RunSummaryResponse:
-    try:
-        issue = resolve_issue(
-            payload.repository_url,
-            issue_number=payload.issue_number,
-            issue_text=payload.issue_text,
-            issue_title=payload.issue_title,
-        )
-    except RepositoryError as exc:
-        raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
+    settings = get_settings()
+    # Policy first: it is cheap and local, whereas resolving an issue number may
+    # call the GitHub API.
+    check_repository_source(payload.repository_url, settings)
+    config = build_run_config(payload, settings)
+    issue = resolve_issue(
+        payload.repository_url,
+        issue_number=payload.issue_number,
+        issue_text=payload.issue_text,
+        issue_title=payload.issue_title,
+        settings=settings,
+    )
 
     run_identifier = create_run(
         repository=payload.to_repository_spec(),
         issue=issue,
-        config=payload.to_run_config(),
+        config=config,
+        settings=settings,
     )
     # The run row was created in another transaction; read it back for the response.
     session.expire_all()
