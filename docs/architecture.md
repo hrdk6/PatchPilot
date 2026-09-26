@@ -125,8 +125,10 @@ The loop stops early, before the budget is spent, on:
 
 ## Data flow for one run
 
-1. `POST /api/v1/runs` validates the request, writes `repositories`, `issues` and
-   `runs` rows, enqueues an `agent_run` job, and returns `202` immediately.
+1. `POST /api/v1/runs` authenticates the caller, validates the request, resolves
+   it against the server's run policy (defaults, caps, refused overrides — see
+   `docs/security.md`), writes `repositories`, `issues` and `runs` rows,
+   enqueues an `agent_run` job, and returns `202` immediately.
 2. The worker claims the job with a conditional `UPDATE` and calls
    `services.execute_run`.
 3. The graph runs. After **every** transition the observer writes a `run_events`
@@ -184,11 +186,35 @@ a test, in Compose and in a single container. The claim is a conditional `UPDATE
 guarded on `status = 'queued'`, so several workers — or several API processes —
 are safe.
 
-**Resumption.** The worker is the only thing that sets a job to `running`, so any
-job still `running` at startup belongs to a process that no longer exists.
-`Worker.recover_orphans()` requeues those jobs (up to three attempts, then fails
-them). A resumed run continues its append-only transition log from the next index
-rather than colliding with its own history.
+**Leases.** Claiming a job stamps it with the worker's id and a heartbeat, which
+a maintenance thread renews every `PATCHPILOT_WORKER_HEARTBEAT_SECONDS`. A
+`running` job whose heartbeat is older than `PATCHPILOT_WORKER_LEASE_SECONDS`
+belongs to a worker that died; any live worker requeues it — at startup and on a
+periodic sweep — with a conditional `UPDATE` that re-checks the stale lease, so
+two sweepers cannot both act on it. After three interrupted attempts the job is
+abandoned and its run closed as `error`. A worker records a job's outcome only
+while it still holds the lease, so one that stalled cannot overwrite the job's
+new owner. (Recovery used to requeue *every* `running` job at startup, which with
+a second process meant re-running jobs a live worker was executing.)
+
+**Resumption.** A requeued run continues its append-only transition log from the
+next index rather than colliding with its own history. `POST /runs/{id}/resume`
+refuses a run that still has a queued or running job.
+
+**Topology.** By default the worker runs inside the API process. With
+`PATCHPILOT_WORKER_ENABLED=false` on the API, `patchpilot worker` runs it as its
+own process (graceful on `SIGTERM`), and any number of those can share the
+database. Workers register in a `workers` table and refresh it with each
+heartbeat, so the API reports liveness and the sandbox the workers actually have,
+not what its own container happens to see.
+
+**Runs never stay "running".** If a job fails outside the state machine — while
+persisting the outcome, say — or is abandoned, its run is closed as `error` (a
+benchmark as `failed`).
+
+**Retention.** Workers sweep workspaces left by crashed attempts at startup.
+`patchpilot cleanup --older-than DAYS`, or `PATCHPILOT_RETENTION_DAYS` on a
+schedule, deletes finished runs, benchmarks, jobs and idle checkouts.
 
 Swapping in Celery or RQ means reimplementing `Worker` against the same `jobs`
 rows. Nothing else changes.

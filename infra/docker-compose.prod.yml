@@ -1,0 +1,114 @@
+# Production-shaped overrides for infra/docker-compose.yml.
+#
+#   export PATCHPILOT_API_KEYS=$(openssl rand -hex 32)
+#   export POSTGRES_PASSWORD=$(openssl rand -hex 24)
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d --build
+#
+# What changes relative to the local stack:
+#
+# * PATCHPILOT_ENVIRONMENT=production: the API refuses to start without API
+#   keys, the unisolated local sandbox is refused, and run requests cannot
+#   loosen the sandbox policy or ingest host paths.
+# * PostgreSQL instead of SQLite. Migrations run once, in the `migrate` service,
+#   before anything else starts, instead of in every process at startup.
+# * The worker is its own service. It alone mounts the Docker socket; the
+#   internet-facing API does not, and runs as an unprivileged user.
+# * Only the dashboard is published. The API is reached through its /api proxy
+#   (scripts and the CLI included); Qdrant and PostgreSQL are internal.
+# * Finished runs older than PATCHPILOT_RETENTION_DAYS (default 30) are deleted.
+#
+# Terminate TLS in front of the published port. Requires Docker Compose 2.24.4+
+# for the !override and !reset tags.
+
+x-api-build: &api-build
+  context: ..
+  dockerfile: infra/api.Dockerfile
+
+x-production-env: &production-env
+  PATCHPILOT_ENVIRONMENT: production
+  PATCHPILOT_LOG_JSON: "true"
+  PATCHPILOT_DATABASE_URL: postgresql+psycopg://patchpilot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/patchpilot
+  PATCHPILOT_DATA_DIR: /data
+  PATCHPILOT_QDRANT_URL: http://qdrant:6333
+  PATCHPILOT_EMBEDDING_PROVIDER: hash
+  PATCHPILOT_DEFAULT_MODEL: ${PATCHPILOT_DEFAULT_MODEL:-mock:deterministic}
+  PATCHPILOT_SANDBOX_BACKEND: docker
+  PATCHPILOT_AUTO_MIGRATE: "false"
+  PATCHPILOT_RETENTION_DAYS: ${PATCHPILOT_RETENTION_DAYS:-30}
+  PATCHPILOT_CORS_ORIGINS: ${PATCHPILOT_PUBLIC_ORIGIN:-http://localhost:5173}
+  PATCHPILOT_OPENAI_API_KEY: ${PATCHPILOT_OPENAI_API_KEY:-}
+  PATCHPILOT_ANTHROPIC_API_KEY: ${PATCHPILOT_ANTHROPIC_API_KEY:-}
+  PATCHPILOT_GITHUB_TOKEN: ${PATCHPILOT_GITHUB_TOKEN:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: patchpilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: patchpilot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patchpilot -d patchpilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  qdrant:
+    ports: !reset []
+
+  migrate:
+    build: *api-build
+    command: ["patchpilot", "db", "upgrade"]
+    restart: "no"
+    environment: *production-env
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    user: "10001:10001"
+    ports: !reset []
+    environment:
+      <<: *production-env
+      PATCHPILOT_API_KEYS: ${PATCHPILOT_API_KEYS:?set PATCHPILOT_API_KEYS, e.g. $(openssl rand -hex 32)}
+      PATCHPILOT_WORKER_ENABLED: "false"
+    # No Docker socket: the API never starts a sandbox.
+    volumes: !override
+      - patchpilot-data:/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: *api-build
+    command: ["patchpilot", "worker"]
+    restart: unless-stopped
+    environment:
+      <<: *production-env
+      PATCHPILOT_WORKER_ENABLED: "true"
+    volumes:
+      - patchpilot-data:/data
+      # Root-equivalent on the host; confined to this service. See docs/security.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The image's healthcheck probes the API port, which a worker does not
+    # serve. The worker exits non-zero if its threads die, and restarts.
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+
+  web:
+    ports: !override
+      - "${PATCHPILOT_BIND_ADDRESS:-127.0.0.1}:${PATCHPILOT_HTTP_PORT:-5173}:80"
+
+volumes:
+  postgres-data:
