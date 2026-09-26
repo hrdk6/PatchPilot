@@ -142,6 +142,13 @@ class Settings(BaseSettings):
     max_queued_jobs: int = Field(default=200, ge=1)
     """Backpressure: new work is refused with 503 while this many jobs wait."""
 
+    # -------------------------------------------------------------- retention
+    retention_days: float | None = Field(default=None, gt=0)
+    """When set, workers delete finished runs, benchmarks, jobs and idle
+    checkouts older than this, every ``retention_interval_hours``. Unset keeps
+    everything; ``patchpilot cleanup`` does the same on demand."""
+    retention_interval_hours: float = Field(default=6.0, gt=0)
+
     # -------------------------------------------------------------- frontend
     # NoDecode: pydantic-settings would otherwise JSON-decode a list field before
     # any validator runs, so the documented comma-separated form

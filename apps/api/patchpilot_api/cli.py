@@ -139,6 +139,42 @@ def db_current() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# cleanup
+# --------------------------------------------------------------------------- #
+@app.command()
+def cleanup(
+    older_than: float = typer.Option(
+        ...,
+        "--older-than",
+        min=1,
+        help="Delete finished runs, benchmarks, jobs and idle checkouts older than DAYS",
+        metavar="DAYS",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without deleting"),
+) -> None:
+    """Delete old history and leftover workspaces from the data directory and database.
+
+    Queued and running work is never touched. Set PATCHPILOT_RETENTION_DAYS to
+    have workers do this on a schedule instead.
+    """
+    from .db import get_engine
+    from .migrations import ensure_schema
+    from .retention import cleanup as run_cleanup
+
+    settings = get_settings()
+    configure_logging("WARNING", json_output=False)
+    get_engine(settings)
+    ensure_schema(settings)
+    report = run_cleanup(settings, older_than_days=older_than, dry_run=dry_run)
+    verb = "would delete" if dry_run else "deleted"
+    _echo(
+        f"{verb}: {report.runs} run(s), {report.benchmarks} benchmark(s), {report.jobs} job(s), "
+        f"{report.checkouts} checkout(s), {report.workspaces + report.staging} leftover "
+        f"workspace(s); {report.bytes_freed / 1_048_576:.1f} MiB"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # sandbox
 # --------------------------------------------------------------------------- #
 @app.command()

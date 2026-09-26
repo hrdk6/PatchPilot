@@ -32,7 +32,7 @@ from patchpilot_core.enums import JobStatus
 from patchpilot_core.errors import PatchPilotError
 from patchpilot_core.logging import get_logger, log_context, new_correlation_id
 
-from . import store
+from . import retention, store
 from .db import session_scope
 from .services import JOB_HANDLERS, handle_job_failure
 
@@ -64,6 +64,7 @@ class Worker:
             return
         self._stop.clear()
         self.recover_orphans()
+        self.sweep_debris()
         for number in range(self.concurrency):
             thread = threading.Thread(
                 target=self._loop, name=f"patchpilot-worker-{number}", daemon=True
@@ -111,6 +112,25 @@ class Worker:
             )
             handle_job_failure(job_type, payload, error, self.settings)
         return len(requeued)
+
+    def sweep_debris(self) -> None:
+        """Remove workspaces and staging directories a crash left behind."""
+        try:
+            report = retention.sweep_debris(self.settings)
+        except Exception:
+            logger.warning("could not sweep leftover workspaces", exc_info=True)
+            return
+        if report.workspaces or report.staging:
+            logger.info("removed leftover workspaces", extra=report.as_dict())
+
+    def apply_retention(self) -> None:
+        """Delete history older than PATCHPILOT_RETENTION_DAYS, if it is set."""
+        if self.settings.retention_days is None:
+            return
+        try:
+            retention.cleanup(self.settings, older_than_days=self.settings.retention_days)
+        except Exception:
+            logger.warning("retention cleanup failed", exc_info=True)
 
     def stop(self, timeout: float = 10.0) -> None:
         """Stop claiming work and wait for in-flight jobs, up to ``timeout``.
@@ -162,12 +182,20 @@ class Worker:
         """Renew this worker's leases, and periodically sweep for dead workers' jobs."""
         heartbeat = self.settings.worker_heartbeat_seconds
         sweep_every = max(heartbeat, self.settings.worker_lease_seconds / 2)
+        retain_every = self.settings.retention_interval_hours * 3600
         last_sweep = time.monotonic()
+        # The first retention pass waits one heartbeat, not a whole interval, so
+        # a worker that restarts often still gets round to it.
+        last_retention = time.monotonic() - retain_every
         while not self._stop.wait(heartbeat):
             self.heartbeat()
-            if time.monotonic() - last_sweep >= sweep_every:
-                last_sweep = time.monotonic()
+            now = time.monotonic()
+            if now - last_sweep >= sweep_every:
+                last_sweep = now
                 self.recover_orphans()
+            if now - last_retention >= retain_every:
+                last_retention = now
+                self.apply_retention()
 
     def heartbeat(self) -> int:
         with self._lock:
