@@ -125,6 +125,31 @@ describe("NewRunPage", () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/runs/run_created"));
   });
 
+  it("keeps to the budget the server allows", async () => {
+    vi.spyOn(api, "system").mockResolvedValue({
+      ...system(true),
+      policy: {
+        max_repair_attempts: 2,
+        default_timeout_seconds: 90,
+        max_timeout_seconds: 300,
+        max_memory_mb: 2048,
+        max_cpus: 2,
+        network: "none",
+        run_overrides_allowed: false,
+        local_repositories_allowed: false,
+        local_sandbox_allowed: false,
+      },
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByLabelText("Repair attempts")).toHaveValue(2));
+    expect(screen.getByLabelText("Repair attempts")).toHaveAttribute("max", "2");
+    expect(screen.getByLabelText("Command timeout (s)")).toHaveValue(90);
+    expect(screen.getByRole("option", { name: /local \(no isolation\)/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "calc_service" })).toBeDisabled();
+    expect(screen.getByText(/accepts git URLs only/)).toBeInTheDocument();
+  });
+
   it("keeps the submit button disabled until a repository is given", async () => {
     renderPage();
     expect(await screen.findByRole("button", { name: "Start run" })).toBeDisabled();

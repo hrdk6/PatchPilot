@@ -6,6 +6,7 @@
  * dependency that does much more would be harder to read than these 80 lines.
  */
 
+import { authHeaders } from "./auth";
 import type {
   ApiError,
   Benchmark,
@@ -43,8 +44,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_PREFIX}${path}`, {
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
       ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...(init?.headers ?? {}),
+      },
     });
   } catch (cause) {
     throw new PatchPilotApiError(0, {
@@ -56,19 +61,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   }
 
-  if (!response.ok) {
-    let payload: Partial<ApiError> = {};
-    try {
-      const body = (await response.json()) as Record<string, unknown>;
-      payload = (body.detail as Partial<ApiError>) ?? (body as Partial<ApiError>);
-    } catch {
-      payload = { message: `${response.status} ${response.statusText}` };
-    }
-    throw new PatchPilotApiError(response.status, payload);
-  }
+  if (!response.ok) throw await errorFrom(response);
 
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+async function errorFrom(response: Response): Promise<PatchPilotApiError> {
+  let payload: Partial<ApiError> = {};
+  try {
+    const body = (await response.json()) as Record<string, unknown>;
+    payload = (body.detail as Partial<ApiError>) ?? (body as Partial<ApiError>);
+  } catch {
+    payload = { message: `${response.status} ${response.statusText}` };
+  }
+  return new PatchPilotApiError(response.status, payload);
+}
+
+function filenameFrom(response: Response, fallback: string): string {
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  return match?.[1] ?? fallback;
+}
+
+/**
+ * Download a file the API serves, sending the API key.
+ *
+ * A plain link cannot carry an Authorization header, so with a key set the
+ * file is fetched and handed to the browser as a blob instead.
+ */
+export async function downloadFile(url: string, fallbackName: string): Promise<void> {
+  const response = await fetch(url, { headers: authHeaders() });
+  if (!response.ok) throw await errorFrom(response);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filenameFrom(response, fallbackName);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 export const api = {

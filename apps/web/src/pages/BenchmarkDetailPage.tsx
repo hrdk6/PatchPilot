@@ -7,6 +7,7 @@ import { api } from "../api/client";
 import { useResource } from "../api/hooks";
 import { BarChart } from "../components/BarChart";
 import {
+  DownloadLink,
   EmptyState,
   ErrorBanner,
   formatDuration,
@@ -54,12 +55,20 @@ export function BenchmarkDetailPage(): JSX.Element {
           <StatusBadge status={data.status} />
           {data.report ? (
             <div className="button-row">
-              <a className="button" href={api.benchmarkJsonUrl(data.id)}>
+              <DownloadLink
+                className="button"
+                href={api.benchmarkJsonUrl(data.id)}
+                filename={`${data.id}.json`}
+              >
                 <DownloadIcon /> Export JSON
-              </a>
-              <a className="button" href={api.benchmarkMarkdownUrl(data.id)}>
+              </DownloadLink>
+              <DownloadLink
+                className="button"
+                href={api.benchmarkMarkdownUrl(data.id)}
+                filename={`${data.id}.md`}
+              >
                 <DownloadIcon /> Export Markdown
-              </a>
+              </DownloadLink>
             </div>
           ) : null}
         </div>

@@ -1,6 +1,6 @@
 /** Run creation: repository, issue, model and execution budget. */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
@@ -61,6 +61,25 @@ export function NewRunPage(): JSX.Element {
   });
 
   const { submit, submitting, error } = useSubmit(api.createRun);
+  const policy = system.data?.policy;
+  const timeoutTouched = useRef(false);
+
+  // The server decides the budget: start from its defaults and stay within its
+  // caps, so the form never offers a value the API would refuse.
+  useEffect(() => {
+    if (!policy) return;
+    setForm((previous) => ({
+      ...previous,
+      max_repair_attempts: Math.min(previous.max_repair_attempts, policy.max_repair_attempts),
+      timeout_seconds: timeoutTouched.current
+        ? Math.min(previous.timeout_seconds, policy.max_timeout_seconds)
+        : policy.default_timeout_seconds,
+      sandbox_backend:
+        previous.sandbox_backend === "local" && !policy.local_sandbox_allowed
+          ? "auto"
+          : previous.sandbox_backend,
+    }));
+  }, [policy]);
 
   function update<K extends keyof CreateRunRequest>(key: K, value: CreateRunRequest[K]) {
     setForm((previous) => ({ ...previous, [key]: value }));
@@ -181,7 +200,7 @@ export function NewRunPage(): JSX.Element {
               />
             </div>
 
-            <fieldset>
+            <fieldset disabled={policy ? !policy.local_repositories_allowed : false}>
               <legend>Load a bundled fixture</legend>
               <div className="button-row">
                 {FIXTURES.map((fixture) => (
@@ -198,7 +217,9 @@ export function NewRunPage(): JSX.Element {
                 ))}
               </div>
               <p className="hint">
-                Three offline bug-fix tasks that need no API key and no network.
+                {policy && !policy.local_repositories_allowed
+                  ? "This server accepts git URLs only, so the bundled fixtures (local paths) are unavailable."
+                  : "Three offline bug-fix tasks that need no API key and no network."}
               </p>
             </fieldset>
           </div>
@@ -240,7 +261,7 @@ export function NewRunPage(): JSX.Element {
                   id="attempts"
                   type="number"
                   min={1}
-                  max={10}
+                  max={policy?.max_repair_attempts ?? 10}
                   value={form.max_repair_attempts}
                   onChange={(event) =>
                     update("max_repair_attempts", Number(event.target.value))
@@ -303,7 +324,13 @@ export function NewRunPage(): JSX.Element {
                 >
                   <option value="auto">auto (prefer Docker)</option>
                   <option value="docker">docker</option>
-                  <option value="local">local (no isolation)</option>
+                  <option
+                    value="local"
+                    disabled={policy ? !policy.local_sandbox_allowed : false}
+                  >
+                    local (no isolation)
+                    {policy && !policy.local_sandbox_allowed ? " — disabled on this server" : ""}
+                  </option>
                 </select>
               </div>
               <div className="field" style={{ flex: 1 }}>
@@ -312,9 +339,12 @@ export function NewRunPage(): JSX.Element {
                   id="timeout"
                   type="number"
                   min={10}
-                  max={3600}
+                  max={policy?.max_timeout_seconds ?? 3600}
                   value={form.timeout_seconds}
-                  onChange={(event) => update("timeout_seconds", Number(event.target.value))}
+                  onChange={(event) => {
+                    timeoutTouched.current = true;
+                    update("timeout_seconds", Number(event.target.value));
+                  }}
                 />
               </div>
             </div>

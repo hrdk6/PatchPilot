@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { useResource, useSubmit } from "../api/hooks";
 import { TERMINAL_STATUSES } from "../api/types";
 import {
+  DownloadLink,
   EmptyState,
   ErrorBanner,
   formatCost,
@@ -75,9 +76,13 @@ export function RunDetailPage(): JSX.Element {
           <Verdict status={summary.status} stopReason={summary.stop_reason} />
           <div className="button-row">
             {detail.final_patch ? (
-              <a className="button primary" href={api.patchDownloadUrl(summary.id)}>
+              <DownloadLink
+                className="button primary"
+                href={api.patchDownloadUrl(summary.id)}
+                filename={`${summary.id}.diff`}
+              >
                 <DownloadIcon /> Download diff
-              </a>
+              </DownloadLink>
             ) : null}
             {live ? (
               <button
@@ -317,9 +322,13 @@ export function RunDetailPage(): JSX.Element {
                   {detail.artifacts.map((artifact) => (
                     <tr key={artifact.id}>
                       <td>
-                        <a href={api.artifactDownloadUrl(artifact.id)} className="mono">
+                        <DownloadLink
+                          href={api.artifactDownloadUrl(artifact.id)}
+                          filename={artifact.filename}
+                          className="mono"
+                        >
                           {artifact.filename}
-                        </a>
+                        </DownloadLink>
                       </td>
                       <td>
                         <Tag>{artifact.kind}</Tag>

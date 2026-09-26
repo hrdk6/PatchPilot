@@ -537,6 +537,18 @@ a.badge:hover {
   margin-top: 3px;
   color: var(--ink-2);
 }
+.api-key-form {
+  margin-top: 10px;
+}
+.api-key-form label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.api-key-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
 .banner-warn {
   background: var(--warn-soft);
   border-color: color-mix(in srgb, var(--warn) 35%, transparent);

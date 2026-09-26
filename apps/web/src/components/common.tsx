@@ -1,8 +1,9 @@
 /** Small presentational building blocks shared across pages. */
 
-import type { ReactNode } from "react";
+import { useState, type MouseEvent, type ReactNode } from "react";
 
-import type { PatchPilotApiError } from "../api/client";
+import { getApiKey, setApiKey } from "../api/auth";
+import { downloadFile, type PatchPilotApiError } from "../api/client";
 import type { RunStatus } from "../api/types";
 import { AlertIcon, CheckIcon, ClockIcon, CrossIcon, MinusIcon, StopIcon } from "./icons";
 
@@ -131,6 +132,53 @@ export function Tag({ children, title }: { children: ReactNode; title?: string }
   );
 }
 
+/**
+ * Asks for the API key when the server refused a request for the lack of one.
+ * Saving reloads the page, so every view re-fetches with the key.
+ */
+export function ApiKeyForm(): JSX.Element {
+  const [value, setValue] = useState("");
+  const saved = getApiKey() !== null;
+  return (
+    <form
+      className="api-key-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!value.trim()) return;
+        setApiKey(value.trim());
+        window.location.reload();
+      }}
+    >
+      <label htmlFor="api-key">API key</label>
+      <div className="row">
+        <input
+          id="api-key"
+          type="password"
+          autoComplete="off"
+          value={value}
+          placeholder={saved ? "The saved key was refused; enter another" : "One of PATCHPILOT_API_KEYS"}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <button type="submit" className="primary" disabled={!value.trim()}>
+          Save key
+        </button>
+        {saved ? (
+          <button
+            type="button"
+            onClick={() => {
+              setApiKey(null);
+              window.location.reload();
+            }}
+          >
+            Forget saved key
+          </button>
+        ) : null}
+      </div>
+      <p className="hint">Stored in this browser only, and sent with every API request.</p>
+    </form>
+  );
+}
+
 export function ErrorBanner({
   error,
   onRetry,
@@ -139,11 +187,13 @@ export function ErrorBanner({
   onRetry?: () => void;
 }): JSX.Element {
   const remediation = "remediation" in error ? error.remediation : null;
+  const needsKey = "status" in error && error.status === 401;
   return (
     <div className="banner banner-error" role="alert">
       <strong>{error.message}</strong>
-      {remediation ? <p>{remediation}</p> : null}
-      {onRetry ? (
+      {remediation && !needsKey ? <p>{remediation}</p> : null}
+      {needsKey ? <ApiKeyForm /> : null}
+      {onRetry && !needsKey ? (
         <p>
           <button type="button" onClick={onRetry}>
             Try again
@@ -151,6 +201,48 @@ export function ErrorBanner({
         </p>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A link to a file the API serves. It stays a plain link (so it can be opened
+ * in a new tab or copied) and, when an API key is set, downloads through an
+ * authenticated fetch instead, since a link cannot carry the key.
+ */
+export function DownloadLink({
+  href,
+  filename,
+  className,
+  children,
+}: {
+  href: string;
+  filename: string;
+  className?: string;
+  children: ReactNode;
+}): JSX.Element {
+  const [failed, setFailed] = useState<string | null>(null);
+  async function handleClick(event: MouseEvent<HTMLAnchorElement>) {
+    if (getApiKey() === null) return;
+    event.preventDefault();
+    setFailed(null);
+    try {
+      await downloadFile(href, filename);
+    } catch (cause) {
+      setFailed(cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+  return (
+    <>
+      <a href={href} className={className} onClick={(event) => void handleClick(event)}>
+        {children}
+      </a>
+      {failed ? (
+        <span className="faint" role="alert">
+          {" "}
+          Download failed: {failed}
+        </span>
+      ) : null}
+    </>
   );
 }
 

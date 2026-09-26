@@ -235,6 +235,19 @@ export interface SandboxStatus {
   controls: Record<string, unknown>;
 }
 
+/** What a run request may ask for on this server. */
+export interface RunPolicy {
+  max_repair_attempts: number;
+  default_timeout_seconds: number;
+  max_timeout_seconds: number;
+  max_memory_mb: number;
+  max_cpus: number;
+  network: string;
+  run_overrides_allowed: boolean;
+  local_repositories_allowed: boolean;
+  local_sandbox_allowed: boolean;
+}
+
 export interface SystemInfo {
   version: string;
   environment: string;
@@ -246,6 +259,9 @@ export interface SystemInfo {
   sandbox: SandboxStatus;
   worker_running: boolean;
   queued_jobs: number;
+  /** Optional so the dashboard still works against an older API. */
+  auth_enabled?: boolean;
+  policy?: RunPolicy;
 }
 
 export interface DatasetTask {
