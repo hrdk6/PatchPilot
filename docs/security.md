@@ -38,9 +38,20 @@ isolation. The API has no auth and must not be exposed beyond localhost.
 Every attempt gets a fresh `shutil.copytree` of the pinned checkout into a
 disposable workspace, and that copy is what goes into the sandbox via
 `docker cp`. No host path is ever bind-mounted. A container therefore cannot see
-or modify the host workspace, the pristine checkout, or any sibling run. Symlinks
-are not copied, so a symlink into the host filesystem cannot be followed in.
+or modify the host workspace, the pristine checkout, or any sibling run.
 `.git` is excluded — it can carry credentials in some setups.
+
+**No symlinks, anywhere.** A symlink in a repository can point at any file on
+the host. The pristine checkout itself is symlink-free: links are skipped when a
+local directory is copied and deleted from a fresh clone, and sandbox workspaces
+skip them again. So neither the indexer, nor the patch dry-run, nor the sandbox
+can read through a link into the host — a link to `~/.ssh/id_rsa` cannot become
+a "source file" that is indexed, sent to the model and shown in the UI.
+
+**Checkouts are immutable.** Each is staged privately, then published by an
+atomic rename under a name derived from its commit SHA or content digest, and is
+never modified afterwards. Concurrent runs of the same repository share one
+checkout instead of deleting and re-cloning it under each other.
 
 The workspace is deleted after every attempt, pass or fail. Attempt N+1 starts
 from the pristine checkout, so one attempt can never contaminate the next.

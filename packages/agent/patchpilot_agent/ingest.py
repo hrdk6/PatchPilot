@@ -13,10 +13,25 @@ Two jobs, both of which must be reproducible:
 
 Nothing in this module executes repository code. Clones are non-recursive (no
 submodule payloads) and run with credential prompting disabled.
+
+**Checkouts are immutable.** Each one is prepared in a private staging directory
+and then published, by an atomic rename, under a name derived from its pinned
+content -- the commit SHA, or the content digest. A published checkout is never
+modified or deleted by ingest, so two runs of the same repository, in two worker
+threads or two processes, cannot pull the tree out from under each other; they
+simply share it. (Checkouts used to be cached per URL and deleted and re-cloned
+on every ingest, which did exactly that.)
+
+**Checkouts contain no symlinks.** A symlink in a repository can point anywhere
+on the host. Copying a local tree used to dereference them, so a link to a
+private key became an ordinary source file -- indexed, put in the model prompt
+and shown in the retrieval trace. Links are now skipped when copying and removed
+from clones; sandbox workspaces never carried them anyway.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import re
@@ -24,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,27 +140,33 @@ def ingest_repository(
     return _ingest_git(spec, settings, destination)
 
 
-def _target_dir(settings: Settings, spec: RepositorySpec, destination: Path | None) -> Path:
-    """Where a checkout is cached. Always a direct child of the cache root.
+def _cache_path(settings: Settings, name: str) -> Path:
+    """A path directly inside the cache root, refusing anything that escapes it.
 
-    The name is the sanitised slug plus a hash of the URL and ref. The result is
-    then asserted to sit inside the cache root: a name that behaved as an
-    absolute path would otherwise make ``/`` discard the root and write the
-    checkout somewhere unexpected -- next to the source repository, for example.
+    A name that behaved as an absolute path would otherwise make ``/`` discard
+    the root and write the checkout somewhere unexpected -- next to the source
+    repository, for example.
     """
-    if destination is not None:
-        return Path(destination)
-    key = hashlib.sha1(
-        f"{spec.url}@{spec.commit_sha or spec.branch or 'default'}".encode()
-    ).hexdigest()[:12]
     root = settings.repo_cache_root
-    target = root / f"{spec.slug}-{key}"
+    target = root / name
     if target.parent != root:
         raise RepositoryError(
-            f"refusing to cache {spec.url!r} outside the cache root {root}",
+            f"refusing to cache {name!r} outside the cache root {root}",
             remediation="This is a bug; please report the repository URL that triggered it.",
         )
     return target
+
+
+def _checkout_name(spec: RepositorySpec, pin: str) -> str:
+    """``<slug>-<pin>``: the same pinned content always maps to the same name."""
+    key = hashlib.sha1(pin.encode("utf-8")).hexdigest()[:16]
+    return f"{spec.slug}-{key}"
+
+
+def _staging_dir(settings: Settings) -> Path:
+    staging = _cache_path(settings, f".staging-{uuid.uuid4().hex}")
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    return staging
 
 
 def _remove_tree(path: Path) -> None:
@@ -168,6 +190,59 @@ def _remove_tree(path: Path) -> None:
     )
 
 
+def _discard(path: Path) -> None:
+    try:
+        _remove_tree(path)
+    except RepositoryError:
+        logger.warning("could not remove a staging directory", extra={"path": str(path)})
+
+
+def _touch(path: Path) -> None:
+    """Record that a checkout was used, for age-based cache pruning."""
+    with contextlib.suppress(OSError):
+        os.utime(path)
+
+
+def _publish(staging: Path, final: Path) -> Path:
+    """Move a fully prepared checkout into place, or adopt an identical one.
+
+    The rename is atomic, so a reader sees either no checkout or a complete one.
+    If another worker published the same pinned content first, the rename fails
+    because the target exists; its tree is identical by construction, so this
+    one is discarded and that one used.
+    """
+    try:
+        os.rename(staging, final)
+    except OSError:
+        if not final.is_dir():
+            _discard(staging)
+            raise
+        _discard(staging)
+    _touch(final)
+    return final
+
+
+def _copy_ignoring(directory: str, entries: list[str]) -> set[str]:
+    """Skip excluded names and every symlink, without following any of them."""
+    skipped = {entry for entry in entries if entry in COPY_EXCLUDES}
+    for entry in entries:
+        if os.path.islink(os.path.join(directory, entry)):
+            skipped.add(entry)
+    return skipped
+
+
+def remove_symlinks(root: Path) -> int:
+    """Delete every symlink under ``root`` without following any. Returns the count."""
+    removed = 0
+    for directory, subdirectories, files in os.walk(root, followlinks=False):
+        for name in [*subdirectories, *files]:
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                os.unlink(path)
+                removed += 1
+    return removed
+
+
 def _ingest_local(
     spec: RepositorySpec, settings: Settings, destination: Path | None
 ) -> IngestedRepository:
@@ -178,22 +253,28 @@ def _ingest_local(
             remediation="Check the path; it must point at a directory on this machine.",
         )
 
-    target = _target_dir(settings, spec, destination)
     source_digest = content_digest(source)
-    if target.is_dir() and content_digest(target) == source_digest:
-        # The cached checkout is byte-identical, so re-copying would only risk a
-        # Windows file lock for no benefit.
-        logger.info("reusing cached checkout", extra={"path": str(target)})
-    else:
+    if destination is not None:
+        target = Path(destination)
         if target.exists():
             _remove_tree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(
-            source,
-            target,
-            ignore=lambda _directory, entries: {e for e in entries if e in COPY_EXCLUDES},
-            symlinks=False,
-        )
+        shutil.copytree(source, target, ignore=_copy_ignoring, symlinks=True)
+    else:
+        target = _cache_path(settings, _checkout_name(spec, source_digest))
+        if target.is_dir():
+            # Published checkouts are complete and immutable, and the name is
+            # derived from the content, so an existing one is the same tree.
+            logger.info("reusing cached checkout", extra={"path": str(target)})
+            _touch(target)
+        else:
+            staging = _staging_dir(settings)
+            try:
+                shutil.copytree(source, staging, ignore=_copy_ignoring, symlinks=True)
+            except BaseException:
+                _discard(staging)
+                raise
+            target = _publish(staging, target)
 
     git_dir = source / ".git"
     if git_dir.exists():
@@ -228,14 +309,62 @@ def _ingest_local(
     )
 
 
+FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
 def _ingest_git(
     spec: RepositorySpec, settings: Settings, destination: Path | None
 ) -> IngestedRepository:
-    target = _target_dir(settings, spec, destination)
-    if target.exists():
-        _remove_tree(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    # A full commit SHA names the tree exactly, so a checkout already published
+    # for it is reused without touching the network.
+    if destination is None and spec.commit_sha and FULL_SHA.match(spec.commit_sha.lower()):
+        cached = _cache_path(settings, _checkout_name(spec, spec.commit_sha.lower()))
+        if cached.is_dir():
+            logger.info("reusing cached checkout", extra={"path": str(cached)})
+            _touch(cached)
+            return IngestedRepository(
+                spec=spec.model_copy(update={"commit_sha": spec.commit_sha.lower()}),
+                path=cached,
+                repo_sha=spec.commit_sha.lower(),
+                source="git-clone",
+            )
 
+    if destination is not None:
+        workdir = Path(destination)
+        if workdir.exists():
+            _remove_tree(workdir)
+        workdir.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        workdir = _staging_dir(settings)
+
+    try:
+        sha, branch = _clone(spec, workdir)
+        removed = remove_symlinks(workdir)
+        if removed:
+            logger.info("removed symlinks from the checkout", extra={"count": removed})
+    except BaseException:
+        if destination is None:
+            _discard(workdir)
+        raise
+
+    target = workdir
+    if destination is None:
+        target = _publish(workdir, _cache_path(settings, _checkout_name(spec, sha)))
+    logger.info(
+        "cloned repository",
+        extra={"url": spec.url, "repo_sha": sha, "path": str(target)},
+    )
+    return IngestedRepository(
+        spec=spec.model_copy(update={"commit_sha": sha}),
+        path=target,
+        repo_sha=sha,
+        source="git-clone",
+        default_branch=branch,
+    )
+
+
+def _clone(spec: RepositorySpec, target: Path) -> tuple[str, str | None]:
+    """Clone ``spec`` into ``target`` and pin it. Returns ``(sha, branch)``."""
     clone_args = ["clone", "--no-recurse-submodules", "--quiet"]
     if spec.commit_sha:
         # A specific commit may not be reachable from a shallow clone of a branch.
@@ -270,17 +399,7 @@ def _ingest_git(
     head = _run_git(["rev-parse", "HEAD"], cwd=target)
     sha = head.stdout.strip() if head.returncode == 0 else content_digest(target)
     branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=target)
-    logger.info(
-        "cloned repository",
-        extra={"url": spec.url, "repo_sha": sha, "path": str(target)},
-    )
-    return IngestedRepository(
-        spec=spec.model_copy(update={"commit_sha": sha}),
-        path=target,
-        repo_sha=sha,
-        source="git-clone",
-        default_branch=branch.stdout.strip() if branch.returncode == 0 else None,
-    )
+    return sha, (branch.stdout.strip() if branch.returncode == 0 else None)
 
 
 # --------------------------------------------------------------------------- #
