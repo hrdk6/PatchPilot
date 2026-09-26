@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 from patchpilot_core.config import Settings, get_settings
-from patchpilot_core.enums import JobStatus, JobType, RunState, RunStatus
-from patchpilot_core.errors import NotFoundError
+from patchpilot_core.enums import JobStatus, JobType, RunState, RunStatus, StopReason
+from patchpilot_core.errors import NotFoundError, QueueFullError
 from patchpilot_core.ids import benchmark_id, job_id, new_id, repo_id, run_id, task_id
 from patchpilot_core.models import (
     AttemptRecord,
@@ -26,7 +27,7 @@ from patchpilot_core.models import (
     StateTransition,
 )
 from patchpilot_indexer import RepositoryIndex
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -44,6 +45,7 @@ from .orm import (
     Run,
     RunEvent,
     SymbolRow,
+    WorkerRow,
 )
 
 
@@ -515,8 +517,31 @@ def enqueue_job(
     return row
 
 
-def claim_next_job(session: Session) -> Job | None:
-    """Atomically claim one queued job.
+def count_jobs(session: Session, *statuses: JobStatus) -> int:
+    stmt = select(func.count()).select_from(Job)
+    if statuses:
+        stmt = stmt.where(Job.status.in_([str(status) for status in statuses]))
+    return int(session.scalar(stmt) or 0)
+
+
+def ensure_queue_capacity(session: Session, settings: Settings | None = None) -> None:
+    """Refuse new work while the queue is full, rather than letting it grow unbounded.
+
+    A queue that only ever grows turns a burst of requests into hours of latency
+    for everyone, and into a backlog that outlives the requests' usefulness.
+    """
+    settings = settings or get_settings()
+    waiting = count_jobs(session, JobStatus.QUEUED)
+    if waiting >= settings.max_queued_jobs:
+        raise QueueFullError(
+            f"the job queue is full ({waiting} waiting)",
+            remediation="Retry once queued work has drained, or raise PATCHPILOT_MAX_QUEUED_JOBS.",
+            context={"queued": waiting, "limit": settings.max_queued_jobs},
+        )
+
+
+def claim_next_job(session: Session, worker_id: str | None = None) -> Job | None:
+    """Atomically claim one queued job and take its lease.
 
     The claim is a conditional UPDATE guarded on ``status = 'queued'``, which is
     atomic on SQLite and PostgreSQL alike. If another worker won the race the
@@ -537,6 +562,8 @@ def claim_next_job(session: Session) -> Job | None:
                 .values(
                     status=str(JobStatus.RUNNING),
                     started_at=utcnow(),
+                    heartbeat_at=utcnow(),
+                    worker_id=worker_id,
                     attempts=Job.attempts + 1,
                 )
             ),
@@ -556,41 +583,229 @@ def finish_job(
     status: JobStatus,
     result: dict[str, Any] | None = None,
     error: str | None = None,
-) -> Job:
+    worker_id: str | None = None,
+) -> bool:
+    """Record a job's outcome. Returns ``False`` if the lease was lost.
+
+    With ``worker_id`` the write only lands while that worker still holds the
+    job: a worker that stalled past its lease, and whose job was handed to
+    another worker, must not overwrite the new owner's record.
+    """
     row = session.get(Job, identifier)
     if row is None:
         raise NotFoundError(f"job {identifier} was not found")
+    stmt = update(Job).where(Job.id == identifier)
+    if worker_id is not None:
+        stmt = stmt.where(Job.worker_id == worker_id, Job.status == str(JobStatus.RUNNING))
+    written = cast(
+        "CursorResult[Any]",
+        session.execute(
+            stmt.values(status=str(status), result=result, error=error, finished_at=utcnow()),
+            execution_options={"synchronize_session": False},
+        ),
+    )
+    session.expire(row)
+    return written.rowcount == 1
+
+
+def heartbeat_jobs(session: Session, job_ids: list[str], worker_id: str) -> int:
+    """Renew the lease on jobs this worker is running. Returns how many it still holds."""
+    if not job_ids:
+        return 0
+    renewed = cast(
+        "CursorResult[Any]",
+        session.execute(
+            update(Job)
+            .where(
+                Job.id.in_(job_ids),
+                Job.worker_id == worker_id,
+                Job.status == str(JobStatus.RUNNING),
+            )
+            .values(heartbeat_at=utcnow()),
+            execution_options={"synchronize_session": False},
+        ),
+    )
+    return int(renewed.rowcount or 0)
+
+
+@dataclass(slots=True)
+class OrphanRecovery:
+    requeued: list[Job] = field(default_factory=list)
+    abandoned: list[Job] = field(default_factory=list)
+
+
+def requeue_orphaned_jobs(
+    session: Session, *, lease_seconds: float, max_attempts: int = 3
+) -> OrphanRecovery:
+    """Recover jobs whose worker died: RUNNING, with a heartbeat older than the lease.
+
+    Only a stale lease makes a job an orphan. Treating every RUNNING job as one
+    -- as a single-process worker could -- would, with a second process,
+    requeue jobs that a live worker is still executing, and run them twice.
+
+    Each transition is a conditional UPDATE re-checking the stale lease, so two
+    workers sweeping at once cannot both act on a job, and a job claimed between
+    the read and the write is left alone. Jobs are requeued up to
+    ``max_attempts`` times and then abandoned, so a job that reproducibly kills
+    its worker cannot loop forever.
+    """
+    cutoff = utcnow() - timedelta(seconds=lease_seconds)
+    stale = and_(
+        Job.status == str(JobStatus.RUNNING),
+        or_(Job.heartbeat_at.is_(None), Job.heartbeat_at < cutoff),
+    )
+    recovery = OrphanRecovery()
+    for job in list(session.scalars(select(Job).where(stale))):
+        abandon = job.attempts >= max_attempts
+        values: dict[str, Any] = (
+            {
+                "status": str(JobStatus.FAILED),
+                "error": (
+                    f"abandoned after {job.attempts} interrupted attempt(s); the worker "
+                    "did not survive this job."
+                ),
+                "finished_at": utcnow(),
+            }
+            if abandon
+            else {
+                "status": str(JobStatus.QUEUED),
+                "started_at": None,
+                "heartbeat_at": None,
+                "worker_id": None,
+            }
+        )
+        changed = cast(
+            "CursorResult[Any]",
+            # No in-Python re-evaluation of the criteria: SQLite returns naive
+            # datetimes, which cannot be compared with the aware cutoff.
+            session.execute(
+                update(Job).where(Job.id == job.id, stale).values(**values),
+                execution_options={"synchronize_session": False},
+            ),
+        )
+        if changed.rowcount != 1:
+            continue
+        session.expire(job)
+        (recovery.abandoned if abandon else recovery.requeued).append(job)
+    session.flush()
+    return recovery
+
+
+def active_jobs_for(session: Session, job_type: JobType, key: str, value: str) -> list[Job]:
+    """Queued or running jobs of ``job_type`` whose payload has ``key == value``.
+
+    Filtered in Python rather than with a JSON path expression, which is spelled
+    differently on every database; the active set is bounded by the queue limit.
+    """
+    active = session.scalars(
+        select(Job).where(
+            Job.type == str(job_type),
+            Job.status.in_([str(JobStatus.QUEUED), str(JobStatus.RUNNING)]),
+        )
+    )
+    return [job for job in active if (job.payload or {}).get(key) == value]
+
+
+def cancel_queued_job(session: Session, identifier: str) -> bool:
+    """Cancel a job that no worker has claimed yet. ``False`` if one already has."""
+    cancelled = cast(
+        "CursorResult[Any]",
+        session.execute(
+            update(Job)
+            .where(Job.id == identifier, Job.status == str(JobStatus.QUEUED))
+            .values(status=str(JobStatus.CANCELLED), finished_at=utcnow()),
+            execution_options={"synchronize_session": False},
+        ),
+    )
+    job = session.get(Job, identifier)
+    if job is not None:
+        session.expire(job)
+    return cancelled.rowcount == 1
+
+
+def close_run(
+    session: Session,
+    run_identifier: str,
+    *,
+    status: RunStatus,
+    stop_reason: StopReason,
+    error: str | None = None,
+) -> Run | None:
+    """Put a run that never reached the end of its state machine into a terminal state.
+
+    Used when the work around the graph fails -- a crashed job, an abandoned one,
+    a cancellation before the run started -- so the run is not left showing
+    "running" forever. A run that is already terminal is left untouched.
+    """
+    row = session.get(Run, run_identifier)
+    if row is None or RunStatus(row.status).is_terminal:
+        return None
     row.status = str(status)
-    row.result = result
-    row.error = error
+    row.state = str(RunState.FINISHED)
+    row.stop_reason = str(stop_reason)
+    if error is not None:
+        row.error = error
     row.finished_at = utcnow()
     return row
 
 
-def requeue_orphaned_jobs(session: Session, *, max_attempts: int = 3) -> list[Job]:
-    """Recover jobs left RUNNING by a crashed or killed worker.
-
-    The worker is the only thing that moves a job into RUNNING, so on startup any
-    job still in that state belongs to a process that no longer exists. Jobs are
-    requeued up to ``max_attempts`` times and then failed, so a job that
-    reproducibly kills the worker cannot loop forever.
-    """
-    stranded = list(session.scalars(select(Job).where(Job.status == str(JobStatus.RUNNING))))
-    requeued: list[Job] = []
-    for job in stranded:
-        if job.attempts >= max_attempts:
-            job.status = str(JobStatus.FAILED)
-            job.error = (
-                f"abandoned after {job.attempts} interrupted attempt(s); the worker "
-                "did not survive this job."
-            )
-            job.finished_at = utcnow()
-            continue
-        job.status = str(JobStatus.QUEUED)
-        job.started_at = None
-        requeued.append(job)
+# --------------------------------------------------------------------------- #
+# Worker registry
+# --------------------------------------------------------------------------- #
+def register_worker(
+    session: Session,
+    identifier: str,
+    *,
+    hostname: str,
+    pid: int,
+    concurrency: int,
+    sandbox: dict[str, Any],
+) -> WorkerRow:
+    row = session.get(WorkerRow, identifier)
+    if row is None:
+        row = WorkerRow(id=identifier, hostname=hostname, pid=pid, started_at=utcnow())
+        session.add(row)
+    row.concurrency = concurrency
+    row.sandbox = sandbox
+    row.heartbeat_at = utcnow()
+    # Rows of workers that vanished without deregistering, long past any lease.
+    session.execute(
+        delete(WorkerRow).where(WorkerRow.heartbeat_at < utcnow() - timedelta(days=1)),
+        execution_options={"synchronize_session": False},
+    )
     session.flush()
-    return requeued
+    return row
+
+
+def heartbeat_worker(
+    session: Session, identifier: str, *, sandbox: dict[str, Any] | None = None
+) -> None:
+    values: dict[str, Any] = {"heartbeat_at": utcnow()}
+    if sandbox is not None:
+        values["sandbox"] = sandbox
+    session.execute(
+        update(WorkerRow).where(WorkerRow.id == identifier).values(**values),
+        execution_options={"synchronize_session": False},
+    )
+
+
+def deregister_worker(session: Session, identifier: str) -> None:
+    session.execute(
+        delete(WorkerRow).where(WorkerRow.id == identifier),
+        execution_options={"synchronize_session": False},
+    )
+
+
+def live_workers(session: Session, *, lease_seconds: float) -> list[WorkerRow]:
+    """Workers that have reported within the lease, freshest first."""
+    cutoff = utcnow() - timedelta(seconds=lease_seconds)
+    return list(
+        session.scalars(
+            select(WorkerRow)
+            .where(WorkerRow.heartbeat_at >= cutoff)
+            .order_by(WorkerRow.heartbeat_at.desc())
+        )
+    )
 
 
 def resumable_runs(session: Session) -> list[Run]:

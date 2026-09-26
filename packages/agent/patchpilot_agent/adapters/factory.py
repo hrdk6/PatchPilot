@@ -81,6 +81,7 @@ def build_adapter(identifier: str, settings: Settings | None = None) -> LLMAdapt
             base_url=settings.openai_base_url,
             api_key=settings.openai_api_key,
             timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
             name="openai",
         )
 
@@ -99,6 +100,7 @@ def build_adapter(identifier: str, settings: Settings | None = None) -> LLMAdapt
             api_key=settings.anthropic_api_key,
             base_url=settings.anthropic_base_url,
             timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
         )
 
     if provider in ("openai-compat", "local", "vllm", *LOCAL_PROVIDERS):
@@ -110,6 +112,7 @@ def build_adapter(identifier: str, settings: Settings | None = None) -> LLMAdapt
             base_url=base_url,
             api_key=settings.openai_api_key,
             timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
             name=provider,
         )
 

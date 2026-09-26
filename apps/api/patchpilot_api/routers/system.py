@@ -2,18 +2,53 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from fastapi import APIRouter, Depends, Query
-from patchpilot_core.config import get_settings
+from patchpilot_core.config import Settings, get_settings
 from patchpilot_core.enums import JobStatus
 from patchpilot_sandbox import SandboxSelection, select_sandbox
 from sqlalchemy.orm import Session
 
 from .. import store
 from ..db import get_db
-from ..schemas import JobResponse, SandboxStatusResponse, SystemInfoResponse
+from ..schemas import (
+    JobResponse,
+    RunPolicyResponse,
+    SandboxStatusResponse,
+    SystemInfoResponse,
+)
 from ..version import __version__
 
 router = APIRouter(tags=["system"])
+# Probes are unauthenticated so an orchestrator can call them without a key.
+public_router = APIRouter(tags=["system"])
+
+
+# Probing Docker shells out to `docker info`, which can take seconds, and the
+# dashboard polls /system. The answer changes rarely, so it is cached briefly.
+SANDBOX_STATUS_TTL_SECONDS = 30.0
+_sandbox_cache: dict[tuple[str, ...], tuple[float, SandboxStatusResponse]] = {}
+_sandbox_cache_lock = threading.Lock()
+
+
+def _cached_sandbox_status(settings: Settings) -> SandboxStatusResponse:
+    key = (
+        settings.sandbox_backend,
+        settings.sandbox_image,
+        settings.environment,
+        str(settings.allow_local_sandbox),
+    )
+    now = time.monotonic()
+    with _sandbox_cache_lock:
+        cached = _sandbox_cache.get(key)
+        if cached is not None and now - cached[0] < SANDBOX_STATUS_TTL_SECONDS:
+            return cached[1]
+    status = _sandbox_status(select_sandbox(settings))
+    with _sandbox_cache_lock:
+        _sandbox_cache[key] = (now, status)
+    return status
 
 
 def _sandbox_status(selection: SandboxSelection) -> SandboxStatusResponse:
@@ -28,7 +63,7 @@ def _sandbox_status(selection: SandboxSelection) -> SandboxStatusResponse:
     )
 
 
-@router.get("/health", summary="Liveness probe", include_in_schema=False)
+@public_router.get("/health", summary="Liveness probe", include_in_schema=False)
 def health() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
 
@@ -44,13 +79,25 @@ def health() -> dict[str, str]:
 )
 def system(session: Session = Depends(get_db)) -> SystemInfoResponse:
     settings = get_settings()
-    selection = select_sandbox(settings)
-    queued = sum(
-        1
-        for job in store.list_jobs(session, limit=500)
-        if job.status in (str(JobStatus.QUEUED), str(JobStatus.RUNNING))
-    )
+    queued = store.count_jobs(session, JobStatus.QUEUED, JobStatus.RUNNING)
     from ..worker import get_worker
+
+    # Workers may live in other processes or containers; each one reports its
+    # liveness and the sandbox it actually has. This process's own view is used
+    # only when it runs the worker itself, or when no worker has reported.
+    live = store.live_workers(session, lease_seconds=settings.worker_lease_seconds)
+    embedded = get_worker(settings).running
+    if embedded or not live:
+        sandbox_status = _cached_sandbox_status(settings)
+    else:
+        report = live[0].sandbox or {}
+        sandbox_status = SandboxStatusResponse(
+            backend=str(report.get("backend", "unknown")),
+            available=bool(report.get("available", False)),
+            isolated=bool(report.get("isolated", False)),
+            reason=str(report.get("reason", "")),
+            controls=dict(report.get("controls") or {}),
+        )
 
     return SystemInfoResponse(
         version=__version__,
@@ -60,9 +107,22 @@ def system(session: Session = Depends(get_db)) -> SystemInfoResponse:
         embedding_provider=settings.embedding_provider,
         default_model=settings.default_model,
         max_repair_attempts=settings.max_repair_attempts,
-        sandbox=_sandbox_status(selection),
-        worker_running=get_worker(settings).running,
+        sandbox=sandbox_status,
+        worker_running=embedded or bool(live),
+        workers=len(live),
         queued_jobs=queued,
+        auth_enabled=settings.auth_enabled,
+        policy=RunPolicyResponse(
+            max_repair_attempts=settings.max_repair_attempts,
+            default_timeout_seconds=settings.sandbox_timeout_seconds,
+            max_timeout_seconds=settings.sandbox_max_timeout_seconds,
+            max_memory_mb=settings.sandbox_max_memory_mb,
+            max_cpus=settings.sandbox_max_cpus,
+            network=settings.sandbox_network,
+            run_overrides_allowed=settings.run_overrides_allowed,
+            local_repositories_allowed=settings.local_repositories_allowed,
+            local_sandbox_allowed=settings.local_sandbox_permitted,
+        ),
     )
 
 
@@ -72,7 +132,7 @@ def system(session: Session = Depends(get_db)) -> SystemInfoResponse:
     summary="Sandbox backend and the controls it applies",
 )
 def sandbox() -> SandboxStatusResponse:
-    return _sandbox_status(select_sandbox(get_settings()))
+    return _cached_sandbox_status(get_settings())
 
 
 @router.get("/jobs", response_model=list[JobResponse], summary="Background job queue")

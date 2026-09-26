@@ -5,12 +5,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from patchpilot_agent import resolve_issue
-from patchpilot_core.enums import JobType, RunStatus
-from patchpilot_core.errors import RepositoryError
+from patchpilot_core.config import get_settings
+from patchpilot_core.enums import JobType, RunStatus, StopReason
+from patchpilot_core.errors import ConflictError
 from sqlalchemy.orm import Session
 
 from .. import store
 from ..db import get_db
+from ..policy import build_run_config, check_repository_source
 from ..schemas import (
     ArtifactResponse,
     AttemptResponse,
@@ -39,20 +41,24 @@ router = APIRouter(prefix="/runs", tags=["runs"])
     ),
 )
 def create(payload: RunCreate, session: Session = Depends(get_db)) -> RunSummaryResponse:
-    try:
-        issue = resolve_issue(
-            payload.repository_url,
-            issue_number=payload.issue_number,
-            issue_text=payload.issue_text,
-            issue_title=payload.issue_title,
-        )
-    except RepositoryError as exc:
-        raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
+    settings = get_settings()
+    # Policy first: it is cheap and local, whereas resolving an issue number may
+    # call the GitHub API.
+    check_repository_source(payload.repository_url, settings)
+    config = build_run_config(payload, settings)
+    issue = resolve_issue(
+        payload.repository_url,
+        issue_number=payload.issue_number,
+        issue_text=payload.issue_text,
+        issue_title=payload.issue_title,
+        settings=settings,
+    )
 
     run_identifier = create_run(
         repository=payload.to_repository_spec(),
         issue=issue,
-        config=payload.to_run_config(),
+        config=config,
+        settings=settings,
     )
     # The run row was created in another transaction; read it back for the response.
     session.expire_all()
@@ -215,22 +221,32 @@ def artifacts(run_id: str, session: Session = Depends(get_db)) -> list[ArtifactR
     response_model=RunSummaryResponse,
     summary="Request cancellation",
     description=(
-        "Sets a cancellation flag the state machine checks between nodes. A run "
-        "already inside a sandbox command finishes that command first."
+        "A run no worker has started is cancelled at once. A running one gets a "
+        "cancellation flag the state machine checks between nodes; a run already "
+        "inside a sandbox command finishes that command first."
     ),
 )
 def cancel(run_id: str, session: Session = Depends(get_db)) -> RunSummaryResponse:
     run = store.get_run(session, run_id)
     if RunStatus(run.status).is_terminal:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "conflict",
-                "message": f"run is already {run.status}",
-                "remediation": "Terminal runs cannot be cancelled.",
-            },
+        raise ConflictError(
+            f"run is already {run.status}", remediation="Terminal runs cannot be cancelled."
         )
-    return RunSummaryResponse.model_validate(store.request_cancel(session, run_id))
+    store.request_cancel(session, run_id)
+    jobs = store.active_jobs_for(session, JobType.AGENT_RUN, "run_id", run_id)
+    # Nothing is executing it (every job is still queued, or it has none), so
+    # there is no state machine to notice the flag: close it here.
+    if all(store.cancel_queued_job(session, job.id) for job in jobs):
+        store.close_run(
+            session,
+            run_id,
+            status=RunStatus.CANCELLED,
+            stop_reason=StopReason.CANCELLED,
+            error="cancelled before it started",
+        )
+    session.flush()
+    session.refresh(run)
+    return RunSummaryResponse.model_validate(run)
 
 
 @router.post(
@@ -247,14 +263,23 @@ def cancel(run_id: str, session: Session = Depends(get_db)) -> RunSummaryRespons
 def resume(run_id: str, session: Session = Depends(get_db)) -> RunSummaryResponse:
     run = store.get_run(session, run_id)
     if RunStatus(run.status).is_terminal:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "conflict",
-                "message": f"run is already {run.status}",
-                "remediation": "Create a new run instead; terminal runs are immutable.",
-            },
+        raise ConflictError(
+            f"run is already {run.status}",
+            remediation="Create a new run instead; terminal runs are immutable.",
         )
+    # A second job for a run that is still queued or executing would run the
+    # same state machine twice at once, interleaving two transition logs.
+    active = store.active_jobs_for(session, JobType.AGENT_RUN, "run_id", run_id)
+    if active:
+        raise ConflictError(
+            f"run is already {active[0].status} as job {active[0].id}",
+            remediation=(
+                "Only a run whose job has ended can be resumed. A job whose worker died "
+                "is requeued automatically once its lease expires."
+            ),
+            context={"job_id": active[0].id},
+        )
+    store.ensure_queue_capacity(session, get_settings())
     run.cancel_requested = False
     run.status = str(RunStatus.QUEUED)
     store.enqueue_job(session, JobType.AGENT_RUN, {"run_id": run_id})

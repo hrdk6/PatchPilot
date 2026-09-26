@@ -25,6 +25,7 @@ import httpx
 from patchpilot_core.errors import ModelAdapterError
 from patchpilot_core.models import ChatMessage, LLMResponse, TokenUsage
 
+from .http import post_with_retries
 from .openai_compat import remediation_for_status
 
 # Room for adaptive thinking plus a plan or a diff. Thinking tokens count
@@ -54,11 +55,13 @@ class AnthropicAdapter:
         api_key: str,
         base_url: str = "https://api.anthropic.com/v1",
         timeout: float = 120.0,
+        max_retries: int = 0,
     ) -> None:
         self.model = model
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.max_retries = max_retries
 
     def complete(
         self,
@@ -90,7 +93,7 @@ class AnthropicAdapter:
 
         started = time.perf_counter()
         try:
-            response = httpx.post(
+            response = post_with_retries(
                 f"{self.base_url}/messages",
                 json=payload,
                 headers={
@@ -99,6 +102,8 @@ class AnthropicAdapter:
                     "anthropic-version": API_VERSION,
                 },
                 timeout=self.timeout,
+                max_retries=self.max_retries,
+                provider=self.name,
             )
         except httpx.HTTPError as exc:
             raise ModelAdapterError(

@@ -24,7 +24,7 @@ from patchpilot_core.enums import CommandKind, RunStatus, SandboxStatus
 from patchpilot_core.errors import ConfigurationError, PatchPilotError
 from patchpilot_core.ids import new_id
 from patchpilot_core.logging import get_logger, log_context
-from patchpilot_core.models import RunConfig, SandboxLimits, TokenUsage
+from patchpilot_core.models import RunConfig, TokenUsage
 from patchpilot_indexer import RepositoryIndex
 
 from .dataset import BenchmarkTask, Dataset
@@ -137,12 +137,7 @@ class BenchmarkRunner:
             typecheck_command=task.typecheck_command,
             retrieval_top_k=self.settings.retrieval_top_k,
             sandbox_backend=self.settings.sandbox_backend,
-            limits=SandboxLimits(
-                cpus=self.settings.sandbox_cpus,
-                memory_mb=self.settings.sandbox_memory_mb,
-                timeout_seconds=task.timeout_seconds or self.settings.sandbox_timeout_seconds,
-                network=self.settings.sandbox_network,
-            ),
+            limits=self.settings.sandbox_limits(timeout_seconds=task.timeout_seconds),
         )
 
         with log_context(benchmark_task=task.id, model=model, run_id=run_identifier):

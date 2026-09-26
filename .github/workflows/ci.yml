@@ -211,6 +211,13 @@ jobs:
           curl --fail --silent --show-error http://localhost:5173/api/v1/system
           curl --fail --silent --show-error http://localhost:8000/health
 
+      - name: The production override resolves
+        env:
+          PATCHPILOT_API_KEYS: ci-only-not-a-secret-0000000000000000
+          POSTGRES_PASSWORD: ci-only
+        run: |
+          docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml config --quiet
+
       - name: Service logs
         if: failure()
         run: docker compose -f infra/docker-compose.yml logs --no-color

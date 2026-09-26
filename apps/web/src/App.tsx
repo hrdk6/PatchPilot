@@ -14,7 +14,7 @@ function SystemIndicator(): JSX.Element {
   if (system.error) {
     return (
       <span className="label label-warn" title={system.error.remediation ?? undefined}>
-        <AlertIcon /> API unreachable
+        <AlertIcon /> {system.error.status === 401 ? "API key needed" : "API unreachable"}
       </span>
     );
   }

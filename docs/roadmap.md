@@ -105,11 +105,18 @@ The most valuable unmeasured number in this project is how often "tests pass" an
 
 ## 8. Operational maturity
 
-- Authentication, authorisation and per-user quotas on the API.
+Done: shared API keys, a server-side run policy, job leases that make several
+worker processes safe, a standalone worker, retries for transient model errors,
+readiness probes, and retention for runs, artifacts, checkouts and workspaces.
+Next:
+
+- Per-user identity, authorisation and run quotas on the API.
 - OpenTelemetry traces spanning the state machine, with the existing correlation
   ids as the trace key.
-- Celery or RQ behind the existing `Worker` interface for multi-host scale.
-- Retention and cleanup for workspaces, artifacts and vectors.
+- Celery or RQ behind the existing `Worker` interface, if a database queue ever
+  becomes the bottleneck.
+- Retention for vector-store namespaces, which needs the in-memory index cache
+  to notice a pruned namespace first.
 - A read-only "share this run" link for review without dashboard access.
 
 ## Deliberately not planned

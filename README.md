@@ -110,6 +110,23 @@ docker compose -f infra/docker-compose.yml up --build
 ```
 
 Dashboard at <http://localhost:5173>, API docs at <http://localhost:8000/docs>.
+Every port is published on `127.0.0.1` only.
+
+### In production
+
+```bash
+export PATCHPILOT_API_KEYS=$(openssl rand -hex 32)
+export POSTGRES_PASSWORD=$(openssl rand -hex 24)
+docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml up -d --build
+```
+
+The production override runs PostgreSQL with a one-shot migration step, puts
+the worker in its own container (the only one holding the Docker socket), runs
+the API unprivileged behind the dashboard's proxy, requires an API key on every
+request, and deletes finished runs after 30 days. With
+`PATCHPILOT_ENVIRONMENT=production` the API also refuses to start without keys,
+refuses the unisolated sandbox, and refuses run requests that would loosen the
+sandbox policy or read a directory on the host. Terminate TLS in front of it.
 
 ### Without Docker Compose
 
@@ -301,9 +318,15 @@ model, the controls and the limits without hedging. The short version:
 - Sandbox output is ANSI-stripped, path-masked, secret-redacted and truncated
   before it is stored, logged or put back in a prompt.
 
+- API keys (`PATCHPILOT_API_KEYS`) guard every `/api/v1` route, and production
+  refuses to start without them. The server, not the request, decides a run's
+  sandbox limits, network access and image.
+- Repository checkouts are immutable and symlink-free, so a link to a file on
+  the host can never be indexed, sent to a model or copied into a sandbox.
+
 **Honest limits:** Docker is kernel-shared isolation; a container escape defeats
-all of it. Disk is not bounded on storage drivers without `--storage-opt`. The
-API has no authentication — bind it to localhost. Redaction is pattern matching,
+all of it. Disk is not bounded on storage drivers without `--storage-opt`. API
+keys are shared secrets, not per-user identities. Redaction is pattern matching,
 not a guarantee. `docs/security.md` lists all of them and the hardening roadmap.
 
 ### The local sandbox
@@ -329,9 +352,17 @@ cloud account, API key or proprietary service is required.**
 | `PATCHPILOT_QDRANT_URL` | unset | Unset uses the on-disk local vector store |
 | `PATCHPILOT_DATABASE_URL` | SQLite | PostgreSQL-compatible; no dialect-specific types |
 | `PATCHPILOT_SANDBOX_BACKEND` | `auto` | `auto` prefers Docker; `local` has no isolation |
-| `PATCHPILOT_MAX_REPAIR_ATTEMPTS` | `3` | Hard cap on the repair loop |
+| `PATCHPILOT_MAX_REPAIR_ATTEMPTS` | `3` | Default and hard cap on the repair loop |
 | `PATCHPILOT_GITHUB_TOKEN` | unset | Optional; pasting issue text always works |
 | `PATCHPILOT_CORS_ORIGINS` | `http://localhost:5173` | Dashboard origins; comma-separated or a JSON list |
+| `PATCHPILOT_ENVIRONMENT` | `local` | `production` turns on the safe defaults below |
+| `PATCHPILOT_API_KEYS` | unset | Comma-separated; required in production |
+| `PATCHPILOT_ALLOW_RUN_OVERRIDES` | local: on, production: off | May a request loosen the sandbox policy |
+| `PATCHPILOT_ALLOW_LOCAL_REPOSITORIES` | local: on, production: off | May a request name a host directory; confine with `PATCHPILOT_LOCAL_REPOSITORY_ROOTS` |
+| `PATCHPILOT_WORKER_ENABLED` | `true` | `false` when `patchpilot worker` runs separately |
+| `PATCHPILOT_MAX_QUEUED_JOBS` | `200` | Backpressure: a 503 beyond this |
+| `PATCHPILOT_LLM_MAX_RETRIES` | `3` | Retries for 429 / 5xx / 529 and dropped connections |
+| `PATCHPILOT_RETENTION_DAYS` | unset | Delete finished history older than this |
 
 The same `PATCHPILOT_OPENAI_BASE_URL` adapter drives OpenAI, Ollama, vLLM, LM Studio and
 any gateway speaking that format — so a benchmark can compare a frontier model
@@ -344,10 +375,12 @@ against one running on the machine under the desk.
 ```bash
 patchpilot demo                      # offline end-to-end demo
 patchpilot serve                     # API + worker
+patchpilot worker                    # the worker alone, as its own process
 patchpilot run <repo> --issue "..."  # one run, prints the timeline and the diff
 patchpilot index <repo>              # index only; --show-symbols to list them
 patchpilot bench <dataset> -m <model> [-m <model>]
 patchpilot sandbox                   # which backend, and the controls it applies
+patchpilot cleanup --older-than 30   # delete old history; --dry-run to preview
 patchpilot db upgrade|downgrade|current
 ```
 
@@ -362,14 +395,14 @@ pre-commit install
 ruff check .                            # lint
 ruff format --check .                   # format
 mypy packages apps/api                  # type check
-pytest -q                               # 391 tests; 4 need a Docker daemon
+pytest -q                               # 500 tests; 4 need a Docker daemon
 ```
 
 ```bash
 cd apps/web
 npm install
 npm run lint
-npm run test                            # 30 tests
+npm run test                            # 37 tests
 npm run build
 ```
 
@@ -385,8 +418,9 @@ covered either way.
 
 CI runs backend lint/types/tests, frontend lint/types/tests/build, a migration
 up-and-down round trip, the offline demo, a two-model benchmark, both container
-builds, the Docker sandbox tests against a real daemon, and a boot of the full
-`docker compose` stack checked end to end through the dashboard's API proxy.
+builds, the Docker sandbox tests against a real daemon, a boot of the full
+`docker compose` stack checked end to end through the dashboard's API proxy, and
+a check that the production compose override resolves.
 
 ---
 
@@ -407,8 +441,10 @@ This is a working vertical slice, not a product. Stated plainly:
 - **No dependency installation by default.** The sandbox has no network, so
   repositories needing `pip install` need an explicit setup command and
   `network=bridge`.
-- **Single-node.** The worker is threads over a database queue. It is safe for
-  several processes but is not a distributed scheduler.
+- **A database queue, not a distributed scheduler.** Any number of worker
+  processes can share one database — claims are atomic, and a job whose worker
+  dies is requeued once its lease expires — but there is no priority,
+  fairness or per-user quota.
 
 [`docs/roadmap.md`](docs/roadmap.md) covers what comes next — GitHub PR
 validation, remote sandboxes, TypeScript, a policy engine, enterprise CI — and

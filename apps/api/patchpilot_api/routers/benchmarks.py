@@ -5,11 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Response
 from patchpilot_core.enums import JobType
 from patchpilot_core.errors import NotFoundError
-from patchpilot_evals import discover_datasets, load_dataset
+from patchpilot_evals import DEFAULT_DATASET_DIR, discover_datasets, load_dataset
 from sqlalchemy.orm import Session
 
 from .. import store
 from ..db import get_db
+from ..policy import dataset_path
 from ..schemas import (
     BenchmarkCreate,
     BenchmarkResponse,
@@ -54,7 +55,7 @@ def list_datasets() -> list[DatasetResponse]:
 
 @datasets_router.get("/{name}", response_model=DatasetResponse, summary="Dataset detail")
 def dataset_detail(name: str) -> DatasetResponse:
-    return _dataset_response(load_dataset(name))
+    return _dataset_response(load_dataset(dataset_path(name, DEFAULT_DATASET_DIR)))
 
 
 @router.post(
@@ -68,7 +69,8 @@ def dataset_detail(name: str) -> DatasetResponse:
     ),
 )
 def create(payload: BenchmarkCreate, session: Session = Depends(get_db)) -> JobResponse:
-    dataset = load_dataset(payload.dataset)
+    dataset = load_dataset(dataset_path(payload.dataset, DEFAULT_DATASET_DIR))
+    store.ensure_queue_capacity(session)
     benchmark = store.create_benchmark(
         session, dataset=str(dataset.path), models=payload.models, tags=payload.tags
     )

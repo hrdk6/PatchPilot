@@ -27,20 +27,81 @@ that matters.
 3. **A resource-exhaustion attack.** A patch introduces an infinite loop, a fork
    bomb, a memory balloon or gigabytes of output.
 
-**Explicitly out of scope for this release:** multi-tenancy, authentication and
-authorisation on the API, network policy for the host, and kernel-level
-isolation. The API has no auth and must not be exposed beyond localhost.
+4. **An unauthorised API caller.** Anyone who can reach the API can queue work
+   that runs commands in the sandbox, and can name a repository by path.
 
-## Controls
+**Explicitly out of scope for this release:** multi-tenancy, per-user identity
+and authorisation, network policy for the host, and kernel-level isolation.
+
+## Controls at the API
+
+### API keys
+
+When `PATCHPILOT_API_KEYS` is set, every `/api/v1` route requires one of the
+keys as `Authorization: Bearer <key>` or `X-API-Key: <key>`, compared in constant
+time. `/health`, `/ready` and the OpenAPI document stay open. With
+`PATCHPILOT_ENVIRONMENT=production` the API **refuses to start** without keys,
+or with keys shorter than 16 characters, unless
+`PATCHPILOT_ALLOW_UNAUTHENTICATED=true` declares that an authenticating proxy is
+in front. Keys are shared secrets: they authenticate a deployment, not a person.
+
+### The server decides what a run may do
+
+Run requests carry execution settings, and they used to be the caller's to
+choose outright. Now (`apps/api/patchpilot_api/policy.py`):
+
+- a field left out takes the operator's `PATCHPILOT_SANDBOX_*` default, and every
+  operator limit — PIDs, output bytes, user, network — reaches the sandbox;
+- the retry budget, timeout, memory and CPUs are capped by
+  `PATCHPILOT_MAX_REPAIR_ATTEMPTS` and `PATCHPILOT_SANDBOX_MAX_*`;
+- anything that **loosens** the policy — `network=bridge`, another sandbox image,
+  the local backend, a larger patch budget, `allowed_write_globs` — is an
+  override, refused unless `PATCHPILOT_ALLOW_RUN_OVERRIDES` is on (the default
+  locally, not in production);
+- a repository given as a host path is refused unless
+  `PATCHPILOT_ALLOW_LOCAL_REPOSITORIES` is on (again: locally yes, production
+  no), and can be confined to `PATCHPILOT_LOCAL_REPOSITORY_ROOTS`. Otherwise a
+  caller could copy `/etc` into the index and read it back from the retrieval
+  trace;
+- benchmark datasets are resolved by name inside the dataset directory, never
+  as a path.
+
+Every violation is reported in one 422 before anything is queued.
+
+### Everything else at the edge
+
+- Request bodies are bounded (issue text 100 kB, commands 2 kB, lists capped).
+- The queue applies backpressure (`PATCHPILOT_MAX_QUEUED_JOBS`, 503 +
+  `Retry-After`) instead of growing without bound.
+- A client's correlation id is accepted only if it matches a safe pattern, so it
+  cannot forge or break structured log lines.
+- Unexpected errors return an envelope with the correlation id, never the
+  exception text.
+- Responses carry `nosniff`, `X-Frame-Options: DENY` and `no-referrer`; API
+  responses also `no-store` and a deny-all CSP. The dashboard's nginx serves a
+  strict CSP and hides its version.
+
+## Controls around generated code
 
 ### 1. The repository is copied, never mounted
 
 Every attempt gets a fresh `shutil.copytree` of the pinned checkout into a
 disposable workspace, and that copy is what goes into the sandbox via
 `docker cp`. No host path is ever bind-mounted. A container therefore cannot see
-or modify the host workspace, the pristine checkout, or any sibling run. Symlinks
-are not copied, so a symlink into the host filesystem cannot be followed in.
+or modify the host workspace, the pristine checkout, or any sibling run.
 `.git` is excluded — it can carry credentials in some setups.
+
+**No symlinks, anywhere.** A symlink in a repository can point at any file on
+the host. The pristine checkout itself is symlink-free: links are skipped when a
+local directory is copied and deleted from a fresh clone, and sandbox workspaces
+skip them again. So neither the indexer, nor the patch dry-run, nor the sandbox
+can read through a link into the host — a link to `~/.ssh/id_rsa` cannot become
+a "source file" that is indexed, sent to the model and shown in the UI.
+
+**Checkouts are immutable.** Each is staged privately, then published by an
+atomic rename under a name derived from its commit SHA or content digest, and is
+never modified afterwards. Concurrent runs of the same repository share one
+checkout instead of deleting and re-cloning it under each other.
 
 The workspace is deleted after every attempt, pass or fail. Attempt N+1 starts
 from the pristine checkout, so one attempt can never contaminate the next.
@@ -176,12 +237,16 @@ Never point it at a repository you did not write.
    against careless code and a moderate one against a determined attacker.
 2. **The daemon is trusted.** PatchPilot talks to a local Docker daemon. Anyone
    who can reach that daemon already has root-equivalent access to the host. In
-   `docker compose` the API container mounts the host socket for this reason and
-   runs as root; dropping to its unprivileged user would not reduce what the
-   socket grants.
+   the local `docker compose` stack the API container mounts the host socket for
+   this reason and runs as root. The production override
+   (`infra/docker-compose.prod.yml`) moves the socket to a dedicated worker
+   container; the API that faces the network has no socket and runs as an
+   unprivileged user.
 3. **Disk is not always bounded** (see `--storage-opt` above).
-4. **No API authentication.** Anyone who can reach the API can run arbitrary
-   commands inside the sandbox. Bind to localhost.
+4. **API keys are shared secrets.** Anyone holding a key can run arbitrary
+   commands inside the sandbox. There are no per-user identities, permissions or
+   quotas; without keys configured (the local default) there is no
+   authentication at all, which is why the local stack binds to 127.0.0.1.
 5. **Prompt injection is not solved.** A repository can contain text aimed at the
    model. The patch policy is what contains the blast radius: a model that is
    talked into disabling CI still cannot, because the diff is rejected.
@@ -198,7 +263,8 @@ In rough order of value:
    is two methods; this is an additive change.
 2. **Move execution off the API host entirely.** Remote sandbox workers with no
    access to the PatchPilot database or its secrets.
-3. **Authentication and authorisation** on the API, with per-user run quotas.
+3. **Per-user identity and authorisation** on the API (SSO, scoped tokens),
+   with per-user run quotas. Shared API keys exist today.
 4. **Egress policy** for the cases that genuinely need network (dependency
    installation): an allow-listed proxy to a package mirror, never open egress.
 5. **A policy engine** for patch rules, so per-repository policy is configuration

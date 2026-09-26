@@ -14,7 +14,7 @@ from pathlib import Path
 import typer
 from patchpilot_core.config import get_settings, reset_settings
 from patchpilot_core.logging import configure_logging
-from patchpilot_core.models import RunConfig, SandboxLimits
+from patchpilot_core.models import RunConfig
 
 app = typer.Typer(
     add_completion=False,
@@ -53,6 +53,61 @@ def serve(
 
 
 # --------------------------------------------------------------------------- #
+# worker
+# --------------------------------------------------------------------------- #
+@app.command()
+def worker(
+    concurrency: int | None = typer.Option(
+        None, help="Worker threads [default: PATCHPILOT_WORKER_CONCURRENCY]"
+    ),
+    grace_seconds: float = typer.Option(
+        30.0, help="On SIGTERM, how long to let running jobs finish before exiting"
+    ),
+) -> None:
+    """Run the background worker as its own process, without the API.
+
+    Pair it with PATCHPILOT_WORKER_ENABLED=false on the API so work runs only
+    here. Any number of these may run against one database: jobs are claimed
+    atomically, and a job whose worker dies is requeued once its lease expires.
+    """
+    import signal
+    import threading
+
+    from .db import get_engine
+    from .migrations import current_revision, ensure_schema, head_revision
+    from .worker import Worker
+
+    settings = get_settings()
+    configure_logging(settings.log_level, settings.log_json)
+    settings.ensure_dirs()
+    get_engine(settings)
+    if settings.auto_migrate:
+        ensure_schema(settings)
+    elif current_revision(settings) != head_revision(settings):
+        _echo("the database schema is behind; run `patchpilot db upgrade` first", error=True)
+        raise typer.Exit(code=1)
+
+    stopping = threading.Event()
+
+    def request_stop(signum, _frame) -> None:  # type: ignore[no-untyped-def]
+        _echo(f"received signal {signum}; finishing in-flight jobs", error=True)
+        stopping.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+
+    pool = Worker(settings, concurrency=concurrency)
+    pool.start()
+    try:
+        while not stopping.wait(1.0):
+            if not pool.running:
+                _echo("worker threads exited unexpectedly", error=True)
+                raise typer.Exit(code=1)
+    finally:
+        pool.stop(timeout=grace_seconds)
+
+
+# --------------------------------------------------------------------------- #
 # db
 # --------------------------------------------------------------------------- #
 @db_app.command("upgrade")
@@ -81,6 +136,42 @@ def db_current() -> None:
     settings = get_settings()
     _echo(f"applied: {current_revision(settings)}")
     _echo(f"head:    {head_revision(settings)}")
+
+
+# --------------------------------------------------------------------------- #
+# cleanup
+# --------------------------------------------------------------------------- #
+@app.command()
+def cleanup(
+    older_than: float = typer.Option(
+        ...,
+        "--older-than",
+        min=1,
+        help="Delete finished runs, benchmarks, jobs and idle checkouts older than DAYS",
+        metavar="DAYS",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without deleting"),
+) -> None:
+    """Delete old history and leftover workspaces from the data directory and database.
+
+    Queued and running work is never touched. Set PATCHPILOT_RETENTION_DAYS to
+    have workers do this on a schedule instead.
+    """
+    from .db import get_engine
+    from .migrations import ensure_schema
+    from .retention import cleanup as run_cleanup
+
+    settings = get_settings()
+    configure_logging("WARNING", json_output=False)
+    get_engine(settings)
+    ensure_schema(settings)
+    report = run_cleanup(settings, older_than_days=older_than, dry_run=dry_run)
+    verb = "would delete" if dry_run else "deleted"
+    _echo(
+        f"{verb}: {report.runs} run(s), {report.benchmarks} benchmark(s), {report.jobs} job(s), "
+        f"{report.checkouts} checkout(s), {report.workspaces + report.staging} leftover "
+        f"workspace(s); {report.bytes_freed / 1_048_576:.1f} MiB"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -141,7 +232,9 @@ def run(
     attempts: int = typer.Option(3, help="Maximum repair attempts"),
     validation_command: str | None = typer.Option(None, help="Command that must pass"),
     backend: str = typer.Option("auto", help="Sandbox backend: auto, docker or local"),
-    timeout: int = typer.Option(180, help="Per-command wall-clock limit in seconds"),
+    timeout: int | None = typer.Option(
+        None, help="Per-command wall-clock limit in seconds [default: server setting]"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print the result as JSON"),
 ) -> None:
     """Run the repair agent once, printing the state-machine timeline."""
@@ -163,7 +256,7 @@ def run(
         max_repair_attempts=attempts,
         validation_command=validation_command,
         sandbox_backend=backend,  # type: ignore[arg-type]
-        limits=SandboxLimits(timeout_seconds=timeout),
+        limits=settings.sandbox_limits(timeout_seconds=timeout),
     )
     outcome = run_agent(
         repository=RepositorySpec(url=repository),
@@ -294,10 +387,7 @@ def demo(
                     max_repair_attempts=settings.max_repair_attempts,
                     validation_command=task.validation_command,
                     baseline_command=task.baseline_command,
-                    limits=SandboxLimits(
-                        timeout_seconds=settings.sandbox_timeout_seconds,
-                        memory_mb=settings.sandbox_memory_mb,
-                    ),
+                    limits=settings.sandbox_limits(),
                 ),
                 settings=settings,
             )

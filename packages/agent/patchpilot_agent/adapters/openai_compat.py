@@ -20,6 +20,8 @@ from patchpilot_core.errors import ModelAdapterError
 from patchpilot_core.models import ChatMessage, LLMResponse, TokenUsage
 from patchpilot_core.textutil import estimate_tokens
 
+from .http import post_with_retries
+
 
 class OpenAICompatAdapter:
     """Implements ``LLMAdapter`` against a ``/chat/completions`` endpoint."""
@@ -33,6 +35,7 @@ class OpenAICompatAdapter:
         timeout: float = 120.0,
         name: str = "openai",
         extra_headers: dict[str, str] | None = None,
+        max_retries: int = 0,
     ) -> None:
         self.name = name
         self.model = model
@@ -40,6 +43,7 @@ class OpenAICompatAdapter:
         self.api_key = api_key
         self.timeout = timeout
         self.extra_headers = extra_headers or {}
+        self.max_retries = max_retries
 
     def complete(
         self,
@@ -67,11 +71,13 @@ class OpenAICompatAdapter:
 
         started = time.perf_counter()
         try:
-            response = httpx.post(
+            response = post_with_retries(
                 f"{self.base_url}/chat/completions",
                 json=payload,
                 headers=headers,
                 timeout=self.timeout,
+                max_retries=self.max_retries,
+                provider=self.name,
             )
         except httpx.HTTPError as exc:
             raise ModelAdapterError(

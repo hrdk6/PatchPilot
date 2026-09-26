@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from patchpilot_agent import describe_models, fetch_github_issue
 from patchpilot_core.config import get_settings
 from patchpilot_core.enums import JobType
-from patchpilot_core.errors import NotFoundError, RepositoryError
+from patchpilot_core.errors import NotFoundError
 from sqlalchemy.orm import Session
 
 from .. import store
 from ..db import get_db
+from ..policy import check_repository_source
 from ..schemas import (
     DependencyGraphResponse,
     ImportEdgeResponse,
@@ -33,6 +34,7 @@ router = APIRouter(prefix="/repositories", tags=["repositories"])
     "", response_model=RepositoryResponse, status_code=201, summary="Register a repository"
 )
 def create(payload: RepositoryCreate, session: Session = Depends(get_db)) -> RepositoryResponse:
+    check_repository_source(payload.url, get_settings())
     row = store.upsert_repository(session, payload.to_spec())
     return RepositoryResponse.model_validate(row)
 
@@ -63,6 +65,7 @@ def detail(repository_id: str, session: Session = Depends(get_db)) -> Repository
 )
 def build_index(repository_id: str, session: Session = Depends(get_db)) -> JobResponse:
     store.get_repository(session, repository_id)
+    store.ensure_queue_capacity(session, get_settings())
     job = store.enqueue_job(session, JobType.INDEX_REPOSITORY, {"repository_id": repository_id})
     return JobResponse.model_validate(job)
 
@@ -145,10 +148,7 @@ issues_router = APIRouter(prefix="/issues", tags=["issues"])
 )
 def lookup(payload: IssueLookupRequest) -> IssueLookupResponse:
     settings = get_settings()
-    try:
-        issue = fetch_github_issue(payload.repository_url, payload.issue_number, settings)
-    except RepositoryError as exc:
-        raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
+    issue = fetch_github_issue(payload.repository_url, payload.issue_number, settings)
     return IssueLookupResponse(
         issue=issue, source="github", token_configured=bool(settings.github_token)
     )

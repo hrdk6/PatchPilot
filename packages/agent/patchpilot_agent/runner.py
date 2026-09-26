@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 
@@ -57,10 +58,16 @@ def run_agent(
         index_cache=index_cache,
         transition_offset=transition_offset,
     )
-    state = graph.run(
-        run_id=run_id or new_run_id(),
-        repository=repository,
-        issue=issue,
-        config=config,
-    )
+    identifier = run_id or new_run_id()
+    try:
+        state = graph.run(
+            run_id=identifier,
+            repository=repository,
+            issue=issue,
+            config=config,
+        )
+    finally:
+        # Each attempt disposes of its own workspace; this removes the run's
+        # directory that held them, and whatever an interrupted attempt left.
+        shutil.rmtree(settings.workspace_root / identifier, ignore_errors=True)
     return RunOutcome(state=state, summary=summarize(state))

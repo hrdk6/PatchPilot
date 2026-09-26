@@ -41,6 +41,14 @@ def build_engine(settings: Settings | None = None) -> Engine:
         path = url.split("///")[-1]
         if path and path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+    else:
+        # The API serves requests from a thread pool (40 threads by default) while
+        # the worker threads and their heartbeat hold connections of their own;
+        # SQLAlchemy's default pool of 5 would make requests queue for a
+        # connection and then time out under load.
+        kwargs["pool_size"] = settings.database_pool_size
+        kwargs["max_overflow"] = settings.database_max_overflow
+        kwargs["pool_recycle"] = 1800
     engine = create_engine(url, **kwargs)
     if url.startswith("sqlite"):
         _configure_sqlite(engine)

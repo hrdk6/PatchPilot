@@ -47,6 +47,28 @@ class ValidationError(PatchPilotError):
     http_status = 422
 
 
+class PolicyError(PatchPilotError):
+    """A request asks for more than this server's configuration permits."""
+
+    code = "policy_violation"
+    http_status = 422
+
+
+class AuthenticationError(PatchPilotError):
+    code = "unauthenticated"
+    http_status = 401
+
+
+class QueueFullError(PatchPilotError):
+    code = "queue_full"
+    http_status = 503
+
+
+class ConflictError(PatchPilotError):
+    code = "conflict"
+    http_status = 409
+
+
 class RepositoryError(PatchPilotError):
     code = "repository_error"
     http_status = 400
