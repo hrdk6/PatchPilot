@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -350,11 +351,13 @@ class TestCancellationAndResume:
         settings = get_settings()
         run_id = create_run(client)
 
-        # Pretend a worker claimed the job and then died: the job is stuck RUNNING
-        # and the run has partial history.
+        # Pretend a worker claimed the job and then died: the job is stuck RUNNING,
+        # its last heartbeat is older than the lease, and the run has partial
+        # history.
         with session_scope(settings) as session:
-            job = store.claim_next_job(session)
+            job = store.claim_next_job(session, worker_id="dead-worker")
             assert job is not None
+            job.heartbeat_at = store.utcnow() - timedelta(seconds=settings.worker_lease_seconds + 1)
             run = store.get_run(session, run_id)
             run.status = str(RunStatus.RUNNING)
             from patchpilot_core.enums import RunState

@@ -15,7 +15,7 @@ from typing import Any
 from patchpilot_agent import AgentState, RunObserver, ingest_repository, run_agent
 from patchpilot_core.config import Settings, get_settings
 from patchpilot_core.costs import estimate_cost
-from patchpilot_core.enums import JobStatus, JobType, RunStatus
+from patchpilot_core.enums import JobStatus, JobType, RunStatus, StopReason
 from patchpilot_core.errors import PatchPilotError
 from patchpilot_core.logging import get_logger, log_context, new_correlation_id
 from patchpilot_core.models import (
@@ -29,6 +29,7 @@ from patchpilot_indexer import IndexCache, RepositoryIndexer
 
 from . import store
 from .db import session_scope
+from .orm import BenchmarkRun
 
 logger = get_logger(__name__, component="services")
 
@@ -150,7 +151,13 @@ def execute_run(run_identifier: str, settings: Settings | None = None) -> dict[s
     with session_scope(settings) as session:
         run_row = store.get_run(session, run_identifier)
         if run_row.cancel_requested:
-            run_row.status = str(RunStatus.CANCELLED)
+            store.close_run(
+                session,
+                run_identifier,
+                status=RunStatus.CANCELLED,
+                stop_reason=StopReason.CANCELLED,
+                error="cancelled before it started",
+            )
             return {"run_id": run_identifier, "status": str(RunStatus.CANCELLED)}
         repository = store.repository_to_spec(store.get_repository(session, run_row.repository_id))
         issue = store.issue_to_spec(store.get_issue(session, run_row.issue_id))
@@ -326,6 +333,42 @@ def execute_benchmark(
         benchmark.finished_at = store.utcnow()
 
     return {"benchmark_id": benchmark_identifier, "tasks": len(report.results)}
+
+
+# --------------------------------------------------------------------------- #
+# Housekeeping
+# --------------------------------------------------------------------------- #
+def handle_job_failure(
+    job_type: str, payload: dict[str, Any], message: str, settings: Settings
+) -> None:
+    """Close whatever a failed or abandoned job was working on.
+
+    The graph closes its own run on every failure it can see, but a failure
+    around it -- a crash while persisting the outcome, a worker killed so often
+    its job is abandoned -- used to leave the run or benchmark "running" in the
+    dashboard indefinitely.
+    """
+    try:
+        with session_scope(settings) as session:
+            if job_type == str(JobType.AGENT_RUN) and payload.get("run_id"):
+                store.close_run(
+                    session,
+                    payload["run_id"],
+                    status=RunStatus.ERROR,
+                    stop_reason=StopReason.SETUP_FAILED,
+                    error=message,
+                )
+            elif job_type == str(JobType.BENCHMARK_RUN) and payload.get("benchmark_id"):
+                benchmark = session.get(BenchmarkRun, payload["benchmark_id"])
+                if benchmark is not None and benchmark.status in (
+                    str(JobStatus.QUEUED),
+                    str(JobStatus.RUNNING),
+                ):
+                    benchmark.status = str(JobStatus.FAILED)
+                    benchmark.error = message
+                    benchmark.finished_at = store.utcnow()
+    except Exception:
+        logger.warning("could not close the target of a failed job", exc_info=True)
 
 
 # --------------------------------------------------------------------------- #

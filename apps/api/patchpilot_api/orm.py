@@ -306,6 +306,10 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     correlation_id: Mapped[str | None] = mapped_column(String(48))
+    # The lease: which worker holds a RUNNING job, and when it last said so. A
+    # job whose heartbeat has gone stale belongs to a dead worker.
+    worker_id: Mapped[str | None] = mapped_column(String(120))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
