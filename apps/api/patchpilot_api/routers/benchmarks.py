@@ -70,6 +70,7 @@ def dataset_detail(name: str) -> DatasetResponse:
 )
 def create(payload: BenchmarkCreate, session: Session = Depends(get_db)) -> JobResponse:
     dataset = load_dataset(dataset_path(payload.dataset, DEFAULT_DATASET_DIR))
+    store.ensure_queue_capacity(session)
     benchmark = store.create_benchmark(
         session, dataset=str(dataset.path), models=payload.models, tags=payload.tags
     )

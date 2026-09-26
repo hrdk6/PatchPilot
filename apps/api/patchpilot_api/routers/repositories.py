@@ -65,6 +65,7 @@ def detail(repository_id: str, session: Session = Depends(get_db)) -> Repository
 )
 def build_index(repository_id: str, session: Session = Depends(get_db)) -> JobResponse:
     store.get_repository(session, repository_id)
+    store.ensure_queue_capacity(session, get_settings())
     job = store.enqueue_job(session, JobType.INDEX_REPOSITORY, {"repository_id": repository_id})
     return JobResponse.model_validate(job)
 

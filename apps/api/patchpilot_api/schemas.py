@@ -329,6 +329,20 @@ class SandboxStatusResponse(ApiModel):
     controls: dict[str, Any]
 
 
+class RunPolicyResponse(ApiModel):
+    """What a run request may ask for on this server (see ``policy.py``)."""
+
+    max_repair_attempts: int
+    default_timeout_seconds: int
+    max_timeout_seconds: int
+    max_memory_mb: int
+    max_cpus: float
+    network: str
+    run_overrides_allowed: bool
+    local_repositories_allowed: bool
+    local_sandbox_allowed: bool
+
+
 class SystemInfoResponse(ApiModel):
     version: str
     environment: str
@@ -340,6 +354,8 @@ class SystemInfoResponse(ApiModel):
     sandbox: SandboxStatusResponse
     worker_running: bool
     queued_jobs: int
+    auth_enabled: bool
+    policy: RunPolicyResponse
 
 
 class JobResponse(ApiModel):

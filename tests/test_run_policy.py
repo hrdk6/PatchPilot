@@ -75,12 +75,12 @@ class TestDefaultsComeFromTheServer:
 class TestCaps:
     def test_the_retry_budget_is_a_hard_cap(self, settings: Settings) -> None:
         with pytest.raises(PolicyError) as caught:
-            build_run_config(request(max_repair_attempts=settings.max_repair_attempts + 1), settings)
+            build_run_config(
+                request(max_repair_attempts=settings.max_repair_attempts + 1), settings
+            )
         assert "max_repair_attempts" in caught.value.context["violations"][0]
 
-    def test_resource_caps_apply_even_where_overrides_are_allowed(
-        self, settings: Settings
-    ) -> None:
+    def test_resource_caps_apply_even_where_overrides_are_allowed(self, settings: Settings) -> None:
         capped = settings.model_copy(
             update={
                 "sandbox_max_timeout_seconds": 60,

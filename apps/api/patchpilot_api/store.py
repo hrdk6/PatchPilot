@@ -16,7 +16,7 @@ from typing import Any, cast
 
 from patchpilot_core.config import Settings, get_settings
 from patchpilot_core.enums import JobStatus, JobType, RunState, RunStatus
-from patchpilot_core.errors import NotFoundError
+from patchpilot_core.errors import NotFoundError, QueueFullError
 from patchpilot_core.ids import benchmark_id, job_id, new_id, repo_id, run_id, task_id
 from patchpilot_core.models import (
     AttemptRecord,
@@ -513,6 +513,29 @@ def enqueue_job(
     session.add(row)
     session.flush()
     return row
+
+
+def count_jobs(session: Session, *statuses: JobStatus) -> int:
+    stmt = select(func.count()).select_from(Job)
+    if statuses:
+        stmt = stmt.where(Job.status.in_([str(status) for status in statuses]))
+    return int(session.scalar(stmt) or 0)
+
+
+def ensure_queue_capacity(session: Session, settings: Settings | None = None) -> None:
+    """Refuse new work while the queue is full, rather than letting it grow unbounded.
+
+    A queue that only ever grows turns a burst of requests into hours of latency
+    for everyone, and into a backlog that outlives the requests' usefulness.
+    """
+    settings = settings or get_settings()
+    waiting = count_jobs(session, JobStatus.QUEUED)
+    if waiting >= settings.max_queued_jobs:
+        raise QueueFullError(
+            f"the job queue is full ({waiting} waiting)",
+            remediation="Retry once queued work has drained, or raise PATCHPILOT_MAX_QUEUED_JOBS.",
+            context={"queued": waiting, "limit": settings.max_queued_jobs},
+        )
 
 
 def claim_next_job(session: Session) -> Job | None:

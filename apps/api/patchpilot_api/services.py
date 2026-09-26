@@ -54,6 +54,7 @@ def create_run(
     """Persist a run and queue it. Returns the run id immediately."""
     settings = settings or get_settings()
     with session_scope(settings) as session:
+        store.ensure_queue_capacity(session, settings)
         repository_row = store.upsert_repository(session, repository)
         issue_row = store.create_issue(session, repository_row, issue)
         run_row = store.create_run(
