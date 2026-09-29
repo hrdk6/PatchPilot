@@ -4,7 +4,8 @@ import { BrowserRouter } from "react-router-dom";
 
 import { App } from "./App";
 import { ROUTER_FUTURE } from "./router";
-import "@fontsource-variable/geist";
+import "@fontsource-variable/instrument-sans";
+import "@fontsource/instrument-serif";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles.css";
 

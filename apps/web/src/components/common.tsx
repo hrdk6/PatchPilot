@@ -107,7 +107,11 @@ export function Verdict({ status, stopReason }: { status: string; stopReason: st
   return (
     <div className={`verdict verdict-${tone}`}>
       <div className="verdict-score" aria-hidden="true">
-        {score}
+        <svg className="verdict-dial" viewBox="0 0 56 56">
+          <circle className="dial-track" cx="28" cy="28" r="24" pathLength={100} />
+          <circle className="dial-sweep" cx="28" cy="28" r="24" pathLength={100} />
+        </svg>
+        <span className="verdict-digit">{score}</span>
       </div>
       <div>
         <div className="verdict-label">

@@ -4,7 +4,7 @@
  * with gutters, checks, and one patchset per attempt.
  */
 
-import { type ReactNode, useState } from "react";
+import { type CSSProperties, type ReactNode, useState } from "react";
 
 import type {
   Attempt,
@@ -21,6 +21,7 @@ import {
   FileIcon,
   InfoIcon,
   MinusIcon,
+  PlaneIcon,
   StopIcon,
 } from "./icons";
 
@@ -71,15 +72,30 @@ export function StageRail({
         Time spent in each state-machine stage, in order
       </figcaption>
       <ol>
-        {STAGES.map((stage) => {
+        {STAGES.map((stage, index) => {
           const ms = perStateMs[stage] ?? 0;
           const count = visits.get(stage) ?? 0;
           const reached = count > 0;
+          const next = STAGES[index + 1];
+          // The leg to the next waypoint is flown only if the run went on to reach it.
+          const flown = reached && next !== undefined && (visits.get(next) ?? 0) > 0;
           let state = reached ? "stage-done" : "stage-idle";
           if (stage === current) state = "stage-current";
           if (stage === stoppedAt) state = "stage-stopped";
+          const landed = passed && stage === "REPAIR_OR_FINISH";
+          let node: JSX.Element | null = null;
+          if (state === "stage-stopped") node = <CrossIcon />;
+          else if (state === "stage-current") node = <PlaneIcon />;
+          else if (landed) node = <CheckIcon />;
           return (
-            <li key={stage} className={state}>
+            <li
+              key={stage}
+              className={`${state}${flown ? " leg-flown" : ""}${landed ? " stage-landed" : ""}`}
+              style={{ "--i": index } as CSSProperties}
+            >
+              <span className="stage-node" aria-hidden="true">
+                {node}
+              </span>
               <div className="stage-head">
                 <span className="stage-name">{stage.replace(/_/g, " ")}</span>
                 {count > 1 ? <span className="stage-visits">×{count}</span> : null}
@@ -214,7 +230,7 @@ export const SIGNALS: { reason: string; key: string; hatch?: boolean; help: stri
   { reason: "import-graph-neighbor", key: "sig-aqua", help: "Imports, or is imported by, a top-ranked file" },
   { reason: "call-graph-neighbor", key: "sig-aqua", hatch: true, help: "Calls, or is called by, a top-ranked symbol" },
   { reason: "lexical-overlap", key: "sig-yellow", help: "Shares rare identifiers with the issue" },
-  { reason: "test-referencing-symbol", key: "sig-magenta", help: "A test that exercises a top-ranked symbol" },
+  { reason: "test-referencing-symbol", key: "sig-violet", help: "A test that exercises a top-ranked symbol" },
   { reason: "path-named-in-issue", key: "sig-neutral", help: "Its path appears in the issue text" },
   { reason: "repository-convention-file", key: "sig-neutral", hatch: true, help: "A repository convention file" },
 ];

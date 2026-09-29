@@ -109,6 +109,13 @@ export const PlusIcon = (props: IconProps) => (
   </Icon>
 );
 
+export const PlaneIcon = (props: IconProps) => (
+  <Icon {...props}>
+    <path d="M13.5 8 2.5 3l2 5-2 5z" />
+    <path d="M4.5 8h4" />
+  </Icon>
+);
+
 export const ArrowRightIcon = (props: IconProps) => (
   <Icon {...props}>
     <path d="M3 8h9.5M9 4.5 12.5 8 9 11.5" />

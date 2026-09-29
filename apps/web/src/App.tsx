@@ -47,9 +47,10 @@ export function App(): JSX.Element {
     <div className="app">
       <header className="topbar">
         <NavLink to="/runs" className="brand" aria-label="PatchPilot, all runs">
-          <svg className="brand-mark" viewBox="0 0 20 20" aria-hidden="true">
-            <rect x="1" y="1" width="18" height="18" rx="3" />
-            <path d="M6 7h5M8.5 4.5v5M6 14h8" />
+          <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <rect className="brand-tile" x="1" y="1" width="22" height="22" rx="7" />
+            <path className="brand-route" d="M5 17.5c3-1 4.5-4 7-6.5s5-3.5 7-3.5" />
+            <path className="brand-plane" d="m19.5 5.5-4.2 1.3 1.6 1.2-.4 2z" />
           </svg>
           PatchPilot
         </NavLink>
