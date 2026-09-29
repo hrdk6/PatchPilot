@@ -31,7 +31,7 @@ INGEST ─▶ INDEX ─▶ RETRIEVE ─▶ PLAN ─▶ GENERATE_PATCH ─▶ VAL
                               FINISHED
 ```
 
-![A run that fixed the bug, shown as a change under review: the issue as its subject, a Verified +1 verdict, the nine stages with the time spent in each, change info, and the review log of every transition with its reason](docs/images/run-detail.png)
+![A run that fixed the bug, shown as a change under review: the issue as its subject, a Verified +1 verdict, the nine stages as a route with the time spent in each, change info, and the review log of every transition with its reason](docs/images/run-detail.png)
 
 ---
 
@@ -202,8 +202,9 @@ Three pages, all reading real persisted data:
   have not configured are listed but disabled, with the env var that would
   enable them.
 - **Run detail** — each run reads like a change in a code-review tool: the issue
-  as its subject, a Verified +1/−1 verdict, a stage rail showing where the time
-  went (and a marked line where a failed run stopped), a live review log, the
+  as its subject, a Verified +1/−1 verdict dial, and the nine stages drawn as a
+  flight path: a magenta route through each stage reached, the time spent in
+  each, and a red waypoint where a failed run stopped. Below it sit a live review log, the
   proposed diff with line-number gutters, one patchset per attempt with its plan
   and sandbox checks, and the retrieval trace. Pick a signal in the trace's
   legend to highlight every chunk it selected.
@@ -213,9 +214,14 @@ Three pages, all reading real persisted data:
 
 ![A benchmark of two models on identical tasks: pass rate with a 95% confidence interval, latency percentiles, retries, tokens and estimated cost, with a small-sample warning](docs/images/benchmark.png)
 
-The dashboard follows the system light/dark preference and reflows down to phone
-width. Its visual system (tokens, colour rules, components) is documented in
-[`DESIGN.md`](DESIGN.md).
+The dashboard's look is "follow the magenta line": on an aeronautical chart the
+planned route is drawn in magenta, and a run is drawn as a flight along the
+agent's state machine. It uses Instrument Serif and Sans with JetBrains Mono for
+machine output, all self-hosted. Each page has one entrance animation (the route
+drawing itself, the queue landing, chart bars growing), and all motion turns off
+under `prefers-reduced-motion`. It follows the system light/dark preference and
+reflows down to phone width. Its visual system (tokens, colour rules, motion,
+components) is documented in [`DESIGN.md`](DESIGN.md).
 
 ---
 
